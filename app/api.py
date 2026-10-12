@@ -27,7 +27,7 @@ from .schemas import (
     Keywords,
     BackupRestore,
     Confirm, NodeSettingsChange, RepeaterCommand, RepeaterLogin, RepeaterSetting, SimUsb,
-    Advert, BatteryDefaultIn, ChannelIn, ChannelView, ChannelMessage, EnabledRequest, ImportCard, Message, PauseRequest, PingRequest, PollRequest, PushEndpoint, PushPrefs, PushSubscribe,
+    Advert, BatteryDefaultIn, BatterySelectionIn, ChannelIn, ChannelView, ChannelMessage, EnabledRequest, ImportCard, Message, PauseRequest, PingRequest, PollRequest, PushEndpoint, PushPrefs, PushSubscribe,
     RuleIn, check_key, validate_config,
 )
 
@@ -726,6 +726,13 @@ def make_router(rt: Runtime) -> APIRouter:
     # ---- Akku-Seite ------------------------------------------------------
     TEMP_JOIN_S = 120   # Temperatur gehört zu einer Akku-Messung, wenn sie höchstens so weit entfernt ist
 
+    async def _battery_selection() -> list:
+        """Gespeicherte Auswahl (3 Plätze). Ohne gespeicherte Liste: der frühere Standard-Repeater (und ein früher gespeicherter Vergleich) belegen die ersten Plätze."""
+        saved = await store.get_setting("battery_selection", None)
+        if isinstance(saved, list):
+            return (list(saved) + [None] * 3)[:3]
+        return [await store.get_setting("battery_default_node", None), await store.get_setting("battery_compare_node", None), None]
+
     @r.get("/battery/nodes")
     async def battery_nodes() -> dict:
         """Repeater, für die eine aktive Akku-Überwachung läuft (samt letzter Werte)."""
@@ -747,13 +754,26 @@ def make_router(rt: Runtime) -> APIRouter:
                 "low_mv": mv, "battery": batt.get(k), "temperature": temp.get(k)}
                for k, mv in low.items()]
         out.sort(key=lambda n: n["name"].lower())
-        return {"nodes": out, "default": await store.get_setting("battery_default_node", None)}
+        return {"nodes": out, "default": await store.get_setting("battery_default_node", None),
+                "selection": await _battery_selection(),
+                "poll_gap_s": max(0.0, min(float(rt.settings.battery_poll_gap_s), 300.0))}
 
     @r.put("/battery/default")
     async def battery_default(body: BatteryDefaultIn) -> dict:
         """Welcher Repeater auf der Akku-Seite beim Öffnen standardmäßig ausgewählt ist."""
         await store.set_setting("battery_default_node", body.public_key)
         return {"ok": True}
+
+    @r.put("/battery/selection")
+    async def battery_selection(body: BatterySelectionIn) -> dict:
+        """Welche (bis zu 3) Repeater auf der Akku-Seite ausgewählt bleiben, bis sie geändert werden. Plätze: 1, 2, 3; leer = frei."""
+        keys: list[str | None] = []
+        for k in body.keys:
+            k = _key(k) if k else None
+            keys.append(None if k in keys else k)                       # derselbe Repeater nur einmal
+        keys += [None] * (3 - len(keys))
+        await store.set_setting("battery_selection", keys)
+        return {"ok": True, "selection": keys}
 
     async def _battery_rows(key: str, hours: int) -> list[dict]:
         since = time.time() - max(1, min(hours, 24 * 90)) * 3600

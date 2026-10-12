@@ -52,7 +52,7 @@ async def incoming(rt, key, text):
 async def test_auto_reply_sends_prefixed_answer(rt):
     await add_reply_rule(rt)
     await incoming(rt, ALICE, "Ping")  # Groß-/Kleinschreibung egal
-    assert rt.node.sent == [(ALICE, "@[Alice (Sim)] pong Alice (Sim)")]
+    assert rt.node.sent == [(ALICE, "@[Alice (Sim)] pong @[Alice (Sim)]")]          # {name} ist selbst eine Erwähnung
     msgs = await rt.store.messages(ALICE)
     assert [m["direction"] for m in msgs] == ["in", "out"]
     assert msgs[1]["auto"] == 1
@@ -297,7 +297,7 @@ async def test_channel_reply_goes_into_the_channel_with_prefix_and_placeholder(r
     await _channel_rule(rt)
     auto = _auto(rt, FakeClock())
     await auto.handle_channel_incoming(_chan_payload(plen=2), "Alice", "ping")
-    assert rt.node.sent_channel == [(0, "@[Alice] pong Alice")]
+    assert rt.node.sent_channel == [(0, "@[Alice] pong @[Alice]")]
     assert rt.node.sent == []                                        # keine Direktnachricht
     msgs = await rt.store.channel_messages(0)
     assert [(m["direction"], m["auto"]) for m in msgs] == [("out", 1)]
@@ -323,7 +323,7 @@ async def test_hourly_cap_answers_only_the_first_n_of_a_crowd(rt):
     for i in range(100):
         await auto.handle_channel_incoming(_chan_payload(), f"Person{i}", "ping")
     assert len(rt.node.sent_channel) == 10
-    assert rt.node.sent_channel[0][1].endswith("Person0") and rt.node.sent_channel[-1][1].endswith("Person9")
+    assert rt.node.sent_channel[0][1].endswith("@[Person0]") and rt.node.sent_channel[-1][1].endswith("@[Person9]")
     warns = [e for e in await rt.store.log(50) if "Höchstzahl" in e["text"]]
     assert len(warns) == 1                                                    # nur einmal gemeldet, kein Log-Spam
 
@@ -482,3 +482,28 @@ async def test_advert_rule_via_api(client):
     assert r.status_code == 422
     r = await client.post("/api/rules", json={"kind": "advert", "name": "A", "config": {"interval_min": 360, "flood": True}})
     assert r.status_code in (200, 201)
+
+
+async def test_name_placeholder_is_a_mention_and_a_leading_one_is_not_doubled(rt):
+    """{name} erscheint als Erwähnung (blauer Chip in der App), nicht als einfacher Text. Steht es am Anfang, kommt keine zweite Erwähnung davor."""
+    await add_reply_rule(rt, reply="{name} pong aus {hops} Hops")
+    await incoming(rt, ALICE, "Ping")
+    assert rt.node.sent[-1][1].startswith("@[Alice (Sim)] pong aus ")
+    assert rt.node.sent[-1][1].count("@[") == 1
+
+
+def test_reply_text_always_starts_with_a_mention_for_loop_protection():
+    from app.automation import MENTION_RE, Automation
+    rt = Automation._reply_text
+    for template in ("pong", "pong {name}", "{name}", "x {name} y {name}", "{time}"):
+        for name in ("Alice", "Al[i]ce", "  ", "", "A  B"):
+            out = rt(template, name, 1, "direkt")
+            assert MENTION_RE.match(out), (template, name, out)       # beginnt immer mit @[…]: sonst könnten zwei Regeln einander endlos antworten
+            assert "[]" not in out and out.count("[[") == 0 and len(out) <= 200
+
+
+def test_name_brackets_are_stripped_and_empty_name_falls_back():
+    from app.automation import Automation
+    assert Automation._reply_text("hi {name}", "Al[i]ce", None) == "@[Alice] hi @[Alice]"
+    assert Automation._reply_text("pong", "", None) == "@[?] pong"
+    assert Automation._reply_text("{name} pong", "Bob", None) == "@[Bob] pong"

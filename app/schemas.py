@@ -93,6 +93,10 @@ class BatteryDefaultIn(BaseModel):
     public_key: str | None = None
 
 
+class BatterySelectionIn(BaseModel):
+    keys: list[str | None] = Field(default_factory=list, max_length=3)      # bis zu 3 Plätze; None oder leer = Platz frei
+
+
 # ---- Regel-Konfigurationen ---------------------------------------------------
 class BatteryPollConfig(BaseModel):
     targets: Literal["all_repeaters"] | list[str] = "all_repeaters"

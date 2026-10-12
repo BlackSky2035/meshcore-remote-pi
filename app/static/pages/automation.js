@@ -221,7 +221,7 @@ export async function mount(root, ctx) {
       <label class="field"><span>Vergleich</span><select name="mode">
         <option value="equals" ${c.mode === 'equals' ? 'selected' : ''}>Nachricht ist genau dieser Text</option>
         <option value="contains" ${c.mode === 'contains' ? 'selected' : ''}>Nachricht enthält diesen Text</option></select></label>
-      <label class="field"><span>Antwort (max. 150 Zeichen; beginnt automatisch mit @[Name], {name} ist meist überflüssig; Platzhalter {name} {time} {hops} {path})</span>
+      <label class="field"><span>Antwort (max. 150 Zeichen; beginnt automatisch mit @[Name]; Platzhalter {name} (als Erwähnung) {time} {hops} {path})</span>
         <input type="text" name="reply" maxlength="150" required value="${esc(c.reply)}"></label>
       <div class="field"><span class="muted small">Wo antworten?</span>
         <label class="toggle small"><input type="checkbox" name="direct" ${c.direct !== false ? 'checked' : ''}> auf Direktnachrichten</label><br>

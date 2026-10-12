@@ -330,10 +330,10 @@ const status = await (await fetch('/api/status')).json();
   const root = fresh();
   const un = await (await imp('pages/battery.js')).mount(root, ctx(status));
   await sleep(500);
-  const opts = [...root.querySelectorAll('#node option')];
+  const opts = [...root.querySelectorAll('select[data-slot="0"] option')];
   check(opts.length >= 1 && opts.some(o => o.textContent.includes('Hügel')), `Dropdown listet überwachte Repeater (${opts.length})`);
-  root.querySelector('#node').value = REP;
-  root.querySelector('#node').dispatchEvent(new window.Event('change')); await sleep(400);
+  root.querySelector('select[data-slot="0"]').value = REP;
+  root.querySelector('select[data-slot="0"]').dispatchEvent(new window.Event('change', {bubbles: true})); await sleep(400);
   check(root.querySelector('#chBat svg') !== null, 'Akku-Diagramm gezeichnet');
   check(root.querySelector('#chBat svg path.lc-line') !== null, 'Akku-Linie vorhanden');
   check([...root.querySelectorAll('#chBat svg text')].some(t => /^\d+ %$/.test(t.textContent)), 'Prozent-Skala rechts vorhanden');
@@ -344,6 +344,57 @@ const status = await (await fetch('/api/status')).json();
   click(root.querySelector('#ranges [data-h="24"]')); await sleep(300);
   check(root.querySelectorAll('#rows tr').length >= 3, 'Zeitraum 24 h umschaltbar');
   un();
+}
+
+// ---- Akku-Seite: bis zu drei Repeater, Auswahl bleibt gespeichert, „Jetzt abfragen“ geht nacheinander, Werte unter jedem Feld
+{
+  const REP = 'c3'.repeat(32), REP2 = 'd4'.repeat(32);
+  const made = await (await fetch('/api/rules', {method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({kind: 'battery_poll', name: 'Akku 2', enabled: true, config: {targets: [REP2], interval_min: 60, low_mv: 3500, temperature: false}})})).json();
+  const pick = (root, i, v) => { const el = root.querySelector(`select[data-slot="${i}"]`); el.value = v; el.dispatchEvent(new window.Event('change', {bubbles: true})); };
+  let root = fresh();
+  let un = await (await imp('pages/battery.js')).mount(root, ctx(status));
+  await sleep(500);
+  const labels = [...root.querySelectorAll('.slot label span')].map(x => x.textContent.trim());
+  check(labels.length === 3 && labels.join('|') === 'Repeater 1|Repeater 2|Repeater 3', `Akku-Seite: drei Plätze „Repeater 1, 2, 3“ (${labels.join(', ')})`);
+  check(!root.textContent.includes('Zum Vergleich'), 'Akku-Seite: keine Beschriftung „Zum Vergleich“ mehr');
+  check(root.querySelectorAll('.slot-val').length === 3, 'Akku-Seite: unter jedem Auswahlfeld ist Platz für den letzten Wert');
+  pick(root, 0, REP); await sleep(400);
+  pick(root, 1, REP2); await sleep(400);
+  pick(root, 2, REP); await sleep(400);                             // derselbe Repeater wie Platz 1: Platz 1 wird frei, er steht nur noch einmal da
+  check(root.querySelector('select[data-slot="0"]').value === '' && root.querySelector('select[data-slot="2"]').value === REP, 'Akku-Seite: derselbe Repeater steht nur auf einem Platz');
+  pick(root, 0, REP); await sleep(400);
+  un();
+  root = fresh();                                                   // Seite „neu geöffnet“
+  un = await (await imp('pages/battery.js')).mount(root, ctx(status));
+  await sleep(700);
+  check(root.querySelector('select[data-slot="0"]').value === REP, 'Akku-Seite: Repeater 1 bleibt nach dem Neuöffnen gewählt');
+  check(root.querySelector('select[data-slot="1"]').value === REP2, 'Akku-Seite: Repeater 2 bleibt nach dem Neuöffnen gewählt');
+  const count = async k => (await (await fetch(`/api/battery/${k}?hours=24`)).json()).rows.length;
+  const before = await count(REP), before2 = await count(REP2);
+  const gap = (await (await fetch('/api/battery/nodes')).json()).poll_gap_s;
+  click(root.querySelector('#poll')); await sleep(150);
+  check(root.querySelector('#poll').disabled === true && /warte|frage/.test(root.querySelector('#poll').textContent), 'Jetzt abfragen: läuft nacheinander (Fortschritt sichtbar, Knopf gesperrt)');
+  check(/abgefragt|wartet/.test(root.querySelector('[data-val="1"]').textContent), 'Jetzt abfragen: unter Repeater 2 steht, dass er an der Reihe ist');
+  await sleep(700);
+  check(await count(REP) > before, 'Jetzt abfragen: erster Repeater wurde sofort abgefragt');
+  check(/\d{4} mV/.test(root.querySelector('[data-val="0"]').textContent), 'Jetzt abfragen: Wert von Repeater 1 steht unter seinem Auswahlfeld');
+  if (gap <= 3) {                                                    // nur bei kurzer Testpause abwarten (Standard 20 s)
+    await sleep(gap * 1000 + 2500);
+    check(await count(REP2) > before2, 'Jetzt abfragen: zweiter Repeater wird nach der Pause abgefragt');
+    check(/\d{4} mV/.test(root.querySelector('[data-val="1"]').textContent), 'Jetzt abfragen: Wert von Repeater 2 steht unter seinem Auswahlfeld');
+    check(root.querySelector('#poll').disabled === false && root.querySelector('#poll').textContent === 'Jetzt abfragen', 'Jetzt abfragen: Knopf danach wieder frei');
+    const names = [...root.querySelectorAll('#chBat svg text')].map(t => t.textContent);
+    check(names.some(t => t.includes('Hügel')) && names.some(t => t.includes('Dach')), 'Akku-Diagramm: Legende nennt beide Repeater');
+    // Jeder Repeater hat in Akku- und Temperatur-Diagramm dieselbe Linienform, die Repeater untereinander verschiedene.
+    const forms = id => [...root.querySelectorAll(`#${id} path.lc-line, #${id} path[stroke-dasharray]`)].map(p => p.getAttribute('stroke-dasharray') || 'solid');
+    const fb = new Set(forms('chBat')), ft = new Set(forms('chTemp'));
+    check(fb.has('solid') && fb.has('7 4'), `Akku-Diagramm: beide Repeater mit verschiedener Linienart (${[...fb].join(', ')})`);
+    check([...ft].every(x => fb.has(x)), `Temperatur-Diagramm: gleiche Linienarten wie im Akku-Diagramm (${[...ft].join(', ')})`);
+  }
+  un();
+  await fetch('/api/battery/selection', {method: 'PUT', headers: {'content-type': 'application/json'}, body: '{"keys": []}'});
+  await fetch(`/api/rules/${made.id}`, {method: 'DELETE'});
 }
 
 // ---- Mein Node (eigene Einstellungen)

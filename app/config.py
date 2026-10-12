@@ -50,6 +50,7 @@ class Settings:
     # automatik: Schutz vor zu viel Funkverkehr
     auto_min_gap_s: float = 15.0      # Mindestabstand zwischen automatischen Sendungen
     auto_max_per_hour: int = 30       # globale Obergrenze automatischer Sendungen pro Stunde
+    battery_poll_gap_s: float = 20.0  # Pause zwischen zwei Repeatern bei „Jetzt abfragen“ auf der Akku-Seite (schont die Stromversorgung des Pi)
 
 
 _SECTIONS = {
@@ -60,7 +61,7 @@ _SECTIONS = {
     ),
     "storage": ("db_path", "retention_days"),
     "map": ("tile_url",),
-    "automation": ("auto_min_gap_s", "auto_max_per_hour"),
+    "automation": ("auto_min_gap_s", "auto_max_per_hour", "battery_poll_gap_s"),
 }
 
 

@@ -128,11 +128,18 @@ button.chat-menu-item:hover, label.chat-menu-item:hover { background: var(--bg);
 .bubble { touch-action: manipulation; }
 
 /* ---- Akku-Seite / Liniendiagramm ---- */
-:root { --c-series: #0e8a8a; --c-batt: #2a78d6; --c-temp: #c2570c; --c-batt2: #2da44e; --c-temp2: #8957e5; --lc-grid: #e1e5ec; --lc-axis: #6b7686; --lc-ring: #fff; }
+:root { --c-series: #0e8a8a; --c-batt: #2a78d6; --c-temp: #c2570c; --c-batt2: #2da44e; --c-temp2: #8957e5; --c-batt3: #c93c8e; --c-temp3: #1b8a9e; --lc-grid: #e1e5ec; --lc-axis: #6b7686; --lc-ring: #fff; }
 @media (prefers-color-scheme: dark) {
-  :root { --c-series: #2fb8b8; --c-batt: #3987e5; --c-temp: #e8793a; --c-batt2: #3fb950; --c-temp2: #a371f7; --lc-grid: #263041; --lc-axis: #8b97a8; --lc-ring: #171e28; }
+  :root { --c-series: #2fb8b8; --c-batt: #3987e5; --c-temp: #e8793a; --c-batt2: #3fb950; --c-temp2: #a371f7; --c-batt3: #e56bb4; --c-temp3: #39c5cf; --lc-grid: #263041; --lc-axis: #8b97a8; --lc-ring: #171e28; }
 }
 .lc { position: relative; width: 100%; }
+/* Akku-Seite: bis zu drei Repeater, unter jedem Auswahlfeld eine Zeile mit den letzten Werten */
+.slots { display: flex; flex-wrap: wrap; gap: 4px 16px; width: 100%; }
+.slot { flex: 1 1 200px; min-width: 0; }
+.slot select { width: 100%; }
+.slot .swatch { display: inline-block; vertical-align: middle; margin-right: 4px; }
+.slot-val { min-height: 2.8em; margin: 0 0 8px; line-height: 1.4; }
+.slot-val.err { color: var(--bad); }
 .lc svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
 .lc-grid { stroke: var(--lc-grid); stroke-width: 1; }
 .lc-axis { fill: var(--lc-axis); font-size: 11px; }

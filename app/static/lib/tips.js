@@ -60,11 +60,11 @@ const TIPS = [
   ['#pushOff', 'Meldet dieses Gerät ab. Andere Geräte bleiben angemeldet.'],
   ['#pushBatt', 'Zusätzlich eine Meldung, wenn ein Repeater unter seine Akku-Warnstufe fällt.'],
   // Akku
-  ['#node', 'Repeater wählen. Es erscheinen nur Repeater mit aktiver Akku-Überwachung.'],
+  ['#slots', 'Bis zu drei Repeater wählen (Repeater 1, 2, 3). Es erscheinen nur Repeater mit aktiver Akku-Überwachung. Der Farbpunkt zeigt die Linie im Diagramm, darunter steht der letzte Wert. Die Auswahl bleibt gespeichert, bis du sie änderst.'],
   ['#ranges button', 'Zeitraum des Verlaufs.'],
   ['#views [data-view=chart]', 'Verlauf als Diagramm. Mit der Maus darüberfahren zeigt die Werte.'],
   ['#views [data-view=table]', 'Alle Messwerte als Tabelle, neueste zuerst.'],
-  ['#poll', 'Fragt Akku und Temperatur jetzt ab (zwei Funkanfragen).'],
+  ['#poll', 'Fragt Akku und Temperatur jetzt ab (zwei Funkanfragen je Repeater). Sind mehrere Repeater gewählt, werden sie nacheinander mit etwa 20 Sekunden Pause abgefragt, damit die Stromversorgung des Pi nicht einbricht. Der neue Wert erscheint unter dem jeweiligen Repeater.'],
   ['#csv', 'Messwerte als CSV-Datei herunterladen (Excel-tauglich, Zeit in UTC).'],
   // Automatik
   ['#pauseBtn', 'Hält die gesamte Automatik an. Bleibt auch nach einem Neustart pausiert.'],
@@ -79,7 +79,7 @@ const TIPS = [
   ['[name=mode]', 'Wie geprüft oder verglichen wird.'],
   ['[name=text]', 'Dieser Text wird unverändert gesendet (ohne „[auto]“), damit Bots darauf reagieren können.'],
   ['[name=match]', 'Auf diesen Text in einer Nachricht antwortet die Regel.'],
-  ['[name=reply]', 'Antwort (max. 150 Zeichen). Platzhalter: {name}, {time}, {hops}, {path} (Weg der empfangenen Nachricht, z. B. a1,b2,c3 oder „direkt“). Beginnt automatisch mit einer Erwähnung des Absenders („@[Name] …“), die in der MeshCore-App als Erwähnung erscheint und gleichzeitig verhindert, dass zwei solche Regeln sich gegenseitig endlos antworten. Darum {name} am Anfang des Textes weglassen, sonst steht der Name doppelt.'],
+  ['[name=reply]', 'Antwort (max. 150 Zeichen). Platzhalter: {name} (wird als Erwähnung @[Name] eingefügt), {time}, {hops}, {path} (Weg der empfangenen Nachricht, z. B. a1,b2,c3 oder „direkt“). Beginnt automatisch mit einer Erwähnung des Absenders („@[Name] …“), die in der MeshCore-App als Erwähnung erscheint und gleichzeitig verhindert, dass zwei solche Regeln sich gegenseitig endlos antworten. Beginnt der Text mit {name}, kommt keine zweite Erwähnung davor.'],
   ['[name=cooldown_min]', 'So lange wird dieselbe Person nach einer Antwort ignoriert.'],
   ['[name=max_per_hour]', 'Obergrenze für Antworten dieser Regel in 60 Minuten, alle Personen zusammen. Schützt Kanäle vor Spam.'],
   ['[name=direct]', 'Auch auf Direktnachrichten antworten.'],

@@ -51,3 +51,5 @@ retention_days = 90
 # Nicht ohne Grund erhöhen.
 auto_min_gap_s = 15
 auto_max_per_hour = 30
+# Pause zwischen zwei Repeatern bei „Jetzt abfragen“ auf der Akku-Seite (Sekunden). Schont die Stromversorgung des Pi (Spannungsabfall beim Senden).
+battery_poll_gap_s = 20

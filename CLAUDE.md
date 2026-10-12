@@ -100,6 +100,7 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit (EU-Bänder: Duty Cycle).
   Absender mindestens 30 s, Antworttext höchstens 150 Zeichen.
 - Antworten der Regelart `auto_reply` beginnen mit einer Erwähnung des Absenders (`@[Name] `) und werden nie auf Nachrichten beantwortet, die selbst mit einer Erwähnung (`MENTION_RE`)
   oder mit `[auto]` beginnen (Schleifenschutz). Das Präfix `[auto] ` (`AUTO_PREFIX`) benutzt nur noch der Raum-Bot (`room.py`, Schleifenschutz auch zwischen zwei Stationen). Nur normaler Text
+  Der Platzhalter `{name}` wird ebenfalls als Erwähnung `@[Name]` eingefügt (`mention_tag`, eckige Klammern im Namen entfernt); beginnt der gefüllte Text schon mit einer Erwähnung, kommt keine zweite davor.
   (`txt_type == 0`); Direktnachrichten nur an bekannte Kontakte, Kanalnachrichten nur in den Kanälen, die in der Regel gewählt sind.
 - Ping-Nachrichten (`mode message`, `channel_ping`) werden BEWUSST ohne `[auto]` gesendet (viele
   fremde Bots reagieren nur auf das nackte „ping“). Schleifen verhindert weiter, dass unsere
@@ -116,6 +117,7 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit (EU-Bänder: Duty Cycle).
 - Temperatur: eigene Funkanfrage (`repeater_telemetry`), verbraucht Sendebudget; ohne Sensor 24 h Pause
   (`NO_TEMP_BACKOFF_S`). Seite „Akku“: `/api/battery/*`, Temperatur gehört zu einer Akku-Messung,
   wenn sie ≤120 s entfernt ist. Diagramm: `static/lib/linechart.js` (Fadenkreuz, Tooltip, CSS-Variablen).
+- Akku-Seite: bis zu 3 Repeater (Plätze „Repeater 1–3“, je Platz feste Farbe `--c-batt/2/3`, Strichart und Markierung (`SHAPES` in `pages/battery.js`), identisch in Akku- UND Temperatur-Diagramm); die Auswahl (`battery_selection` in `settings`, Liste mit 3 Plätzen) wird beim Ändern gespeichert (`PUT /api/battery/selection`; alter `battery_default_node`/`battery_compare_node` dient als Ersatz, wenn noch nichts gespeichert ist). Unter jedem Feld steht der letzte Wert. „Jetzt abfragen“ geht Repeater für Repeater mit Pause `battery_poll_gap_s` (Standard 20 s, Obergrenze 300 s) dazwischen, in `pages/battery.js`: nie mehrere Funkabfragen unmittelbar hintereinander (Spannungsabfall am Pi). Tests: `tests/test_battery.py`, UI-Smoke „Akku-Seite“.
 - Auto-Antwort: Limit je Regel `max_per_hour` (rollend 60 min, synchron reserviert) und Pause je Person;
   gilt für Direktnachrichten und Kanäle.
 

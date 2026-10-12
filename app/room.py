@@ -18,7 +18,7 @@ import time
 from collections import defaultdict, deque
 from typing import Awaitable, Callable
 
-from .automation import AUTO_PREFIX, SendBudget
+from .automation import AUTO_PREFIX, SendBudget, mention_tag
 from .node.base import BaseNode, NodeError
 
 log = logging.getLogger("meshcore-remote")
@@ -37,13 +37,6 @@ _CTRL = re.compile(r"[\x00-\x1f\x7f]")
 HELP = "Befehle: /p Text (schreiben), /neu, /verlauf [1-5], /anmelden, /abmelden"
 LINE_MAX = 150      # so lang darf eine Nachricht an die MeshCore-App höchstens sein (Zähler dort: 150), gemessen in BYTES (Umlaute/Emojis zählen mehr);
                     # die Empfangszeit wird nur angehängt, wenn es passt, und jede Zeile wird zur Sicherheit auf LINE_MAX gekürzt
-
-
-def mention_tag(name: str) -> str:
-    """Erwähnung "@[Name]". Eckige Klammern im Namen würden sie zerreißen (MeshCore erlaubt sie seit App 1.27 in Namen nicht mehr) und werden entfernt.
-    Leer, wenn nichts übrig bleibt."""
-    n = " ".join(str(name or "").replace("[", "").replace("]", "").split())
-    return f"@[{n}]" if n else ""
 
 
 class RoomError(NodeError):

@@ -33,6 +33,13 @@ log = logging.getLogger(__name__)
 
 AUTO_PREFIX = "[auto] "        # Raum-Bot (room.py) und Altbestand; auto_reply-Regeln hängen stattdessen "@[Name] " voran
 MENTION_RE = re.compile(r"^@\[[^\]]+\]\s*")   # erkennt "@[Name] " am Anfang (Schleifenschutz für auto_reply)
+
+
+def mention_tag(name: str) -> str:
+    """Erwähnung "@[Name]". Eckige Klammern im Namen würden sie zerreißen (MeshCore erlaubt sie seit App 1.27 in Namen nicht mehr) und werden entfernt.
+    Leer, wenn nichts übrig bleibt."""
+    n = " ".join(str(name or "").replace("[", "").replace("]", "").split())
+    return f"@[{n}]" if n else ""
 TICK_S = 5.0
 STARTUP_DELAY_S = 20.0
 STAGGER_S = 10.0
@@ -203,9 +210,19 @@ class Automation:
 
     @classmethod
     def _fill(cls, template: str, name: str, hops: int | None, path: str = "?") -> str:
-        return (template.replace("{name}", name).replace("{time}", time.strftime("%H:%M"))
+        """Platzhalter ersetzen. {name} wird als Erwähnung "@[Name]" eingesetzt (nicht als einfacher Text)."""
+        return (template.replace("{name}", mention_tag(name) or str(name)).replace("{time}", time.strftime("%H:%M"))
                 .replace("{hops}", str(hops) if hops is not None and hops >= 0 else "?")
                 .replace("{path}", path))
+
+    @classmethod
+    def _reply_text(cls, template: str, name: str, hops: int | None, path: str = "?") -> str:
+        """Antworttext mit Erwähnung vorn. Beginnt der Text nach dem Füllen schon mit einer Erwähnung (z. B. "{name} pong"), kommt keine zweite davor.
+        Die Erwähnung am Anfang ist zugleich der Schleifenschutz (siehe MENTION_RE) und darf nie fehlen."""
+        text = cls._fill(template, name, hops, path)
+        if not MENTION_RE.match(text):
+            text = f"{mention_tag(name) or '@[?]'} {text}"
+        return text[:200]
 
     async def handle_incoming(self, payload: dict, contact: dict | None) -> None:
         """Prüft Auto-Antwort-Regeln für Direktnachrichten. Wird NICHT aus dem Node-Callback
@@ -245,7 +262,7 @@ class Automation:
             if hops is None and isinstance(contact.get("path_len"), int) and contact["path_len"] >= 0:
                 hops = contact["path_len"]               # Ersatz: bekannter Weg zu diesem Kontakt
             where = self.path_text(payload.get("path"), 1, hops)
-            reply = (f"@[{contact['name']}] " + self._fill(cfg["reply"], contact["name"], hops, where))[:200]
+            reply = self._reply_text(cfg["reply"], contact["name"], hops, where)
             try:
                 await self.node.send_message(sender, reply)
                 await self.store.add_message("out", "direct", sender, reply,
@@ -292,7 +309,7 @@ class Automation:
                 return
             mode = payload.get("path_hash_mode")
             where = self.path_text(payload.get("path"), mode + 1 if isinstance(mode, int) and mode >= 0 else 1, hops)
-            reply = (f"@[{who}] " + self._fill(cfg["reply"], who, hops, where))[:200]
+            reply = self._reply_text(cfg["reply"], who, hops, where)
             try:
                 res = await self.node.send_channel_message(idx, reply)
                 await self.store.add_message("out", "channel", str(idx), reply, auto=True,

@@ -35,7 +35,8 @@ function timeLabel(ts, spanS) {
 
 /**
  * host: Container-Element. points: [{x: unixSekunden, y: Zahl}]
- * opts: {unit, decimals, colorVar, label, threshold: {y, label}, ariaLabel}
+ * opts: {unit, decimals, colorVar, dash, shape, label, threshold: {y, label}, ariaLabel}
+ * dash: Linienmuster (z. B. '7 4', leer = durchgezogen), shape: Punktform 'circle' | 'square' | 'triangle' (Standard Kreis).
  * Gibt {destroy} zurück. Zeichnet bei Größenänderung neu.
  */
 export function lineChart(host, points, opts) {
@@ -70,7 +71,8 @@ export function lineChart(host, points, opts) {
   function draw() {
     for (const n of [...host.querySelectorAll('svg')]) n.remove();
     const W = Math.max(280, host.clientWidth || 640), H = 240;
-    const m = {l: 52, r: rightPad ?? rightMargin(rightAxis), t: 12, b: 26};
+    const legendH = extraSeries.length ? (extraSeries.length + 1) * 13 + 4 : 0;       // Legende steht über dem Diagramm, nicht über den Linien
+    const m = {l: 52, r: rightPad ?? rightMargin(rightAxis), t: 12 + legendH, b: 26};
     const allPoints = points.length ? points : extraSeries.find(s => s.points.length)?.points || points;
     const x0 = xMin ?? allPoints[0].x, x1 = xMax ?? allPoints[allPoints.length - 1].x;
     const ys = points.map(p => p.y).concat(...extraSeries.map(s => s.points.map(p => p.y)))
@@ -113,24 +115,34 @@ export function lineChart(host, points, opts) {
       svg.append(el('line', {x1: m.l, x2: W - m.r, y1: sy(threshold.y), y2: sy(threshold.y), class: 'lc-thresh'}));
       svg.append(el('text', {x: W - m.r - 2, y: sy(threshold.y) - 4, 'text-anchor': 'end', class: 'lc-axis'}, threshold.label));
     }
-    const drawSeries = (pts, cVar) => {
+    // Punkt je Form an (x, y); jede Form behält ihre Farbe und den hellen Rand (lc-dot).
+    const marker = (shape, x, y, cVar) => {
+      const style = `fill: var(${cVar})`;
+      if (shape === 'square') return el('rect', {x: x - 3, y: y - 3, width: 6, height: 6, class: 'lc-dot', style});
+      if (shape === 'triangle') return el('polygon', {points: `${x},${y - 4} ${x + 4},${y + 3} ${x - 4},${y + 3}`, class: 'lc-dot', style});
+      return el('circle', {cx: x, cy: y, r: 3, class: 'lc-dot', style});
+    };
+    const drawSeries = (pts, cVar, dash, shape) => {
       if (!pts.length) return;
       const d = pts.map((p, i) => `${i ? 'L' : 'M'}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ');
-      svg.append(el('path', {d, class: 'lc-line', style: `stroke: var(${cVar})`}));
-      if (pts.length <= 80) {
-        for (const p of pts) svg.append(el('circle', {cx: sx(p.x), cy: sy(p.y), r: 3, class: 'lc-dot',
-                                                      style: `fill: var(${cVar})`}));
-      }
+      const attrs = {d, class: 'lc-line', style: `stroke: var(${cVar})`};
+      if (dash) attrs['stroke-dasharray'] = dash;
+      svg.append(el('path', attrs));
+      if (pts.length <= 80) for (const p of pts) svg.append(marker(shape, sx(p.x), sy(p.y), cVar));
     };
-    drawSeries(points, colorVar);
-    for (const s of extraSeries) drawSeries(s.points, s.colorVar);
+    drawSeries(points, colorVar, opts.dash, opts.shape);
+    for (const s of extraSeries) drawSeries(s.points, s.colorVar, s.dash, s.shape);
     if (extraSeries.length) {
       // Kleine Legende oben links, damit klar ist, welche Linie wem gehört.
-      const items = [{label: label || 'A', colorVar}, ...extraSeries];
+      const items = [{label: label || 'A', colorVar, dash: opts.dash, shape: opts.shape}, ...extraSeries];
       items.forEach((it, i) => {
-        const ly = m.t + i * 13;
-        svg.append(el('rect', {x: m.l, y: ly - 7, width: 8, height: 8, fill: `var(${it.colorVar})`, rx: 2}));
-        svg.append(el('text', {x: m.l + 12, y: ly, 'font-size': 10, fill: 'currentColor'}, it.label));
+        const ly = 12 + i * 13;
+        // Muster der Linie samt Punktform, so wie sie im Diagramm gezeichnet wird
+        const sample = {x1: m.l, x2: m.l + 20, y1: ly - 3, y2: ly - 3, class: 'lc-line', style: `stroke: var(${it.colorVar})`};
+        if (it.dash) sample['stroke-dasharray'] = it.dash;
+        svg.append(el('line', sample));
+        svg.append(marker(it.shape, m.l + 10, ly - 3, it.colorVar));
+        svg.append(el('text', {x: m.l + 26, y: ly, 'font-size': 10, fill: 'currentColor'}, it.label));
       });
     }
     const cross = el('line', {y1: m.t, y2: H - m.b, class: 'lc-cross'});
@@ -152,7 +164,7 @@ export function lineChart(host, points, opts) {
       const cx = sx(best.x), cy = sy(best.y);
       cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.style.display = '';
       focus.setAttribute('cx', cx); focus.setAttribute('cy', cy); focus.style.display = '';
-      let text = points.length ? fmt(best.y) + (extra ? ` · ${extra(best.y)}` : '') : '';
+      let text = points.length ? (extraSeries.length && label ? `${label}: ` : '') + fmt(best.y) + (extra ? ` · ${extra(best.y)}` : '') : '';
       for (const s of extraSeries) {
         if (!s.points.length) continue;
         const sp = nearest(s.points, px);
