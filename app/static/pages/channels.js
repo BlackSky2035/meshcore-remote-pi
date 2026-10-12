@@ -271,6 +271,8 @@ export async function mount(root, ctx) {
     const c = channels.find(x => x.idx === idx);
     if (!c) return;
     const unreadAtOpen = c.unread || 0;      // vor markRead erfassen, sonst ist der Zähler schon weg
+    // Ein Verlaufseintrag für den offenen Chat: „Zurück“ des Browsers/iOS-Randwisch schließt dann den Chat statt die Seite zu wechseln.
+    if (current === null && !window.history.state?.mcChat) { try { window.history.pushState({mcChat: 1}, ''); } catch { /* ohne Verlauf */ } }
     current = idx;
     wrap.classList.add('chat-open');
     $('chatBack').hidden = false;
@@ -289,6 +291,7 @@ export async function mount(root, ctx) {
   }
 
   function closeChat() {
+    if (window.history.state?.mcChat) { try { window.history.back(); } catch { /* ohne Verlauf */ } }     // Verlaufseintrag wieder entfernen
     current = null;
     wrap.classList.remove('chat-open');
     $('chatBack').hidden = true;
@@ -299,6 +302,46 @@ export async function mount(root, ctx) {
     $('chatText').disabled = $('chatSend').disabled = true;
     $('chat').innerHTML = '<p class="muted">Links einen Kanal wählen oder einen neuen anlegen.</p>';
   }
+
+  // Wie bei WhatsApp: Chat nach rechts wischen = der Chat folgt dem Finger und gleitet nach rechts weg, danach steht die Kanalliste da.
+  // Reicht der Wisch (ein Drittel der Breite oder schnell), schließt er sich, sonst springt er zurück. Nur waagerechte Wischer
+  // nach rechts; senkrechtes Scrollen und Textmarkieren bleiben unberührt.
+  let swipe = null;
+  const cleanups = [];                                              // Aufräumen beim Verlassen der Seite (Wisch- und Verlaufs-Listener)
+  const chatCard = $('chatCard');
+  const slide = (x, anim) => { chatCard.style.transition = anim ? 'transform .18s ease-out' : 'none'; chatCard.style.transform = x ? `translateX(${x}px)` : ''; };
+  // Die Wischer hören auf der ganzen Seite (nicht nur auf der Chat-Karte), damit es egal ist, wo der Finger ansetzt, auch neben der Karte.
+  const onDoc = (type, fn) => { document.addEventListener(type, fn, {passive: true}); cleanups.push(() => document.removeEventListener(type, fn)); };
+  onDoc('touchstart', e => {
+    const t = e.touches && e.touches[0];
+    const own = e.target.closest?.('input, textarea, select, dialog');       // Textfelder und Dialoge behalten ihre Wischer
+    swipe = current !== null && t && !own && e.touches.length === 1 ? {x: t.clientX, y: t.clientY, t: Date.now(), lock: null} : null;
+  });
+  onDoc('touchmove', e => {
+    const t = e.touches && e.touches[0];
+    if (!swipe || !t) return;
+    const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+    if (!swipe.lock && Math.max(Math.abs(dx), Math.abs(dy)) > 10) swipe.lock = dx > 0 && Math.abs(dy) < dx / 1.5 ? 'h' : 'v';
+    if (swipe.lock === 'h') slide(Math.max(0, dx), false);
+  });
+  onDoc('touchend', e => {
+    const t = e.changedTouches && e.changedTouches[0], s = swipe;
+    swipe = null;
+    if (!s || !t || current === null) return;
+    const dx = t.clientX - s.x, dy = t.clientY - s.y, w = chatCard.offsetWidth || 360;
+    const fast = Date.now() - s.t < 300 && dx > 60;
+    const horizontal = s.lock ? s.lock === 'h' : Math.abs(dy) < dx / 2;      // ohne touchmove (z. B. Test): nur Start/Ende vergleichen
+    if (horizontal && (dx > w / 3 || fast || (!s.lock && dx > 80))) {
+      if (!s.lock) { slide(0, false); closeChat(); return; }
+      slide(w, true);
+      setTimeout(() => { slide(0, false); if (alive) closeChat(); }, 180);
+    } else slide(0, true);
+  });
+  onDoc('touchcancel', () => { swipe = null; slide(0, true); });
+
+  const onPop = () => { if (current !== null) closeChat(); };      // Browser-„Zurück“ (auch der Randwisch am iPhone) = zurück zur Kanalliste
+  window.addEventListener('popstate', onPop);
+  cleanups.push(() => window.removeEventListener('popstate', onPop));
 
   const chatMax = Number($('chatText').maxLength);
   // Antwort auf eine Nachricht (Doppelklick): Absender und Empfangszeit der Nachricht. Die Uhrzeit wird beim Senden eingefügt, wenn Platz ist.
@@ -345,8 +388,8 @@ export async function mount(root, ctx) {
 
   // Doppelklick auf eine fremde Nachricht: Absender im Eingabefeld erwähnen ("@[Name]"). Beim Senden kommt die Uhrzeit, zu der die Nachricht
   // empfangen wurde, dazu ("@[Name] (14:32) Text"), solange die Nachricht dadurch nicht zu lang wird.
-  $('chat').ondblclick = e => {
-    const b = e.target.closest('.bubble[data-name]');
+  function mentionFrom(target) {
+    const b = target.closest('.bubble[data-name]');
     if (!b || !b.dataset.name || $('chatText').disabled) return;
     const mention = mentionTag(b.dataset.name);
     if (!mention) return;
@@ -357,7 +400,23 @@ export async function mount(root, ctx) {
     updateChatCount();
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
-  };
+  }
+  $('chat').ondblclick = e => mentionFrom(e.target);
+  // Am Handy (vor allem iOS) kommt „dblclick“ nicht zuverlässig: Doppeltippen zusätzlich selbst erkennen (zweimal kurz hintereinander
+  // an fast derselben Stelle). Mehrfaches Auslösen schadet nicht, der Name wird nur einmal vorangestellt.
+  let lastTap = null, tapStart = null;
+  $('chat').addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    tapStart = e.touches.length === 1 && t ? {x: t.clientX, y: t.clientY} : null;
+  }, {passive: true});
+  $('chat').addEventListener('touchend', e => {
+    const t = e.changedTouches[0], s = tapStart;
+    tapStart = null;
+    if (!s || !t || Math.hypot(t.clientX - s.x, t.clientY - s.y) > 10) { lastTap = null; return; }      // Wischen/Scrollen ist kein Tippen
+    const now = Date.now();
+    if (lastTap && now - lastTap.t < 350 && Math.hypot(t.clientX - lastTap.x, t.clientY - lastTap.y) < 30) { lastTap = null; mentionFrom(e.target); }
+    else lastTap = {t: now, x: t.clientX, y: t.clientY};
+  }, {passive: true});
 
   $('chatSend').onclick = sendChat;
   $('chatText').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
@@ -453,6 +512,7 @@ export async function mount(root, ctx) {
   return () => {
     alive = false;
     offs.forEach(off => off());
+    cleanups.forEach(off => off());
     document.removeEventListener('visibilitychange', onVisible);
     document.removeEventListener('click', onDocClick);
   };

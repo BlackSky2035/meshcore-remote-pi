@@ -214,6 +214,33 @@ const status = await (await fetch('/api/status')).json();
   check(root.querySelector('#chat .bubble.out .detail')?.textContent.includes('Repeat'), 'Nach dem Einschalten steht bei eigenen Nachrichten die Repeat-Zeile');
   const st = await (await fetch('/api/channels')).json();
   check(st.channels.find(c => c.name === 'UI-Test')?.show_details === true, 'Einstellung wurde serverseitig gespeichert');
+
+  // Wischen: nach rechts = zurück zur Liste, nach unten/zu kurz/links = bleibt im Chat
+  const touch = (type, x, y) => { const ev = new window.Event(type, {bubbles: true}); const t = [{clientX: x, clientY: y}];
+    Object.defineProperty(ev, type === 'touchend' ? 'changedTouches' : 'touches', {value: t}); if (type === 'touchend') Object.defineProperty(ev, 'touches', {value: []});
+    root.querySelector('#chatCard').dispatchEvent(ev); };
+  const swipeBy = (dx, dy) => { touch('touchstart', 100, 300); touch('touchend', 100 + dx, 300 + dy); };
+  swipeBy(40, 0); swipeBy(-150, 0); swipeBy(120, 150);
+  check(root.querySelector('#chatTitle').textContent === 'UI-Test', 'Wischen: zu kurz, nach links oder schräg nach unten bleibt der Chat offen');
+  swipeBy(150, 10); await sleep(100);
+  check(root.querySelector('#chatTitle').textContent === 'Kein Kanal gewählt' && root.querySelector('#chatBack').hidden, 'Wischen nach rechts schließt den Chat (Kanalliste)');
+  // Browser-„Zurück“ (iOS-Randwisch) schließt den Chat statt die Seite zu verlassen
+  [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(300);
+  check(window.history.state?.mcChat === 1, 'Offener Chat hat einen Verlaufseintrag');
+  window.history.back(); await sleep(300);
+  check(root.querySelector('#chatTitle').textContent === 'Kein Kanal gewählt' && !window.history.state?.mcChat, 'Browser-Zurück schließt den Chat');
+  swipeBy(150, 0);                                                    // ohne offenen Chat: nichts passiert
+  [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(400);
+  // mit Mitziehen (touchmove): langsam und zu kurz -> springt zurück; weit genug -> gleitet weg und schließt
+  const drag = async (dx, dt) => { touch('touchstart', 100, 300); touch('touchmove', 100 + dx / 2, 302); touch('touchmove', 100 + dx, 304);
+    await sleep(dt); touch('touchend', 100 + dx, 304); await sleep(350); };
+  await drag(40, 400);
+  check(root.querySelector('#chatTitle').textContent === 'UI-Test' && root.querySelector('#chatCard').style.transform === '', 'Mitziehen: zu kurz, springt zurück');
+  [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(200);
+  await drag(200, 400);
+  check(root.querySelector('#chatTitle').textContent === 'Kein Kanal gewählt' && root.querySelector('#chatCard').style.transform === '', 'Mitziehen: weit genug, Chat gleitet weg und schließt');
+  [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(400);
+  check(root.querySelector('#chatTitle').textContent === 'UI-Test', 'Kanal lässt sich nach dem Wischen wieder öffnen');
   check(st.channels.filter(c => c.name !== 'UI-Test').every(c => c.show_details === false), 'Andere Kanäle bleiben ausgeblendet');
   click(root.querySelector('#detailToggle')); await sleep(300);
   check(!root.querySelector('#chat .detail'), 'Ausschalten blendet die Zeilen wieder aus');
@@ -227,6 +254,18 @@ const status = await (await fetch('/api/status')).json();
   root.querySelector('#chatText').value = '';
   root.querySelector('#chat .bubble.out').dispatchEvent(new window.MouseEvent('dblclick', {bubbles: true}));
   check(root.querySelector('#chatText').value === '', 'Doppelklick auf eigene Nachricht erwähnt niemanden');
+  // Doppeltippen am Handy (ohne dblclick): zweimal kurz tippen erwähnt, Wischen/Scrollen oder langsames Tippen nicht
+  const tapEv = (type, el, x, y) => { const ev = new window.Event(type, {bubbles: true}); Object.defineProperty(ev, 'touches', {value: type === 'touchend' ? [] : [{clientX: x, clientY: y}]});
+    Object.defineProperty(ev, 'changedTouches', {value: [{clientX: x, clientY: y}]}); el.dispatchEvent(ev); };
+  const tap = (el, x = 50, y = 50, dx = 0) => { tapEv('touchstart', el, x, y); tapEv('touchend', el, x + dx, y); };
+  const bub = root.querySelector('#chat .bubble[data-name]');
+  tap(bub); tap(bub, 50, 50, 40); tap(bub);                          // Tippen, Wisch (unterbricht), Tippen: kein Doppeltippen
+  check(root.querySelector('#chatText').value === '', 'Doppeltippen: Wischen dazwischen zählt nicht');
+  await sleep(500); tap(bub); await sleep(500); tap(bub);
+  check(root.querySelector('#chatText').value === '', 'Doppeltippen: zu langsam zählt nicht');
+  tap(bub); tap(bub);
+  check(root.querySelector('#chatText').value === '@[Alice (Sim)] ', 'Doppeltippen setzt @[Name] ins Eingabefeld');
+  root.querySelector('#chatText').value = '';
 
   // Erwähnung mit Uhrzeit der empfangenen Nachricht (nur wenn Platz ist)
   const U = await imp('lib/util.js');
