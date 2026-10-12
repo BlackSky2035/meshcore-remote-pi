@@ -1,0 +1,194 @@
+:root {
+  --bg: #f5f6f8; --card: #fff; --text: #1c2330; --muted: #6b7686;
+  --line: #e1e5ec; --accent: #1f6feb; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f141b; --card: #171e28; --text: #e6ebf2; --muted: #8b97a8;
+          --line: #263041; --accent: #4c8dff; --ok: #3fb950; --bad: #f85149; --warn: #d29922; }
+}
+* { box-sizing: border-box; }
+/* Kopfzeile bleibt immer sichtbar: body ist eine Spalte aus fester Kopfzeile + einem eigenen Scroll-Bereich für
+   alles darunter (statt die ganze Seite zu scrollen) - zuverlässiger auf dem Handy als position:sticky allein. */
+html, body { height: 100%; }
+body { margin: 0; font: 15px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text);
+       display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; flex-wrap: wrap;
+         border-bottom: 1px solid var(--line); background: var(--card); flex: none; z-index: 1000; }
+header h1 { font-size: 17px; margin: 0; }
+#scrollArea { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
+nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
+nav a { padding: 6px 12px; border-radius: 8px; color: var(--text); text-decoration: none; }
+nav a.active { background: var(--accent); color: #fff; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; }
+.dot.on { background: var(--ok); }
+.banner { background: var(--warn); color: #fff; padding: 8px 16px; }
+main { max-width: 1000px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
+.card h3 { margin: 12px 0 6px; font-size: 15px; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; }
+dt { color: var(--muted); } dd { margin: 0; word-break: break-all; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.row.between { justify-content: space-between; }
+input, select, button, textarea { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+                                  background: var(--bg); color: var(--text); }
+textarea { width: 100%; min-height: 70px; font-family: ui-monospace, monospace; font-size: 13px; }
+input[type=text], input[type=search] { flex: 1; min-width: 140px; }
+input[type=number] { width: 90px; }
+input[type=checkbox] { padding: 0; width: 16px; height: 16px; }
+button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
+button.small, .small { font-size: 13px; }
+button.small { padding: 4px 9px; }
+button:disabled { opacity: .5; cursor: default; }
+.muted { color: var(--muted); }
+.err { color: var(--bad); }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+tr:last-child td { border: 0; }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; color: #fff; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips button { background: transparent; color: var(--text); border: 1px solid var(--line); }
+.chips button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.bar { height: 8px; width: 90px; background: var(--line); border-radius: 4px; overflow: hidden; display: inline-block; vertical-align: middle; }
+.bar > span { display: block; height: 100%; background: var(--ok); }
+.bar.low > span { background: var(--bad); }
+#log, .log { max-height: 320px; overflow: auto; font: 13px/1.5 ui-monospace, monospace; }
+.log .t, #log .t { color: var(--muted); }
+.log .k, #log .k { color: var(--accent); }
+.chat { max-height: 280px; overflow: auto; display: grid; gap: 6px; padding: 6px 0; }
+.bubble { max-width: 80%; padding: 6px 10px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); word-break: break-word; }
+.bubble.out { justify-self: end; background: var(--accent); color: #fff; border-color: var(--accent); }
+.bubble.auto { opacity: .75; font-style: italic; }
+.bubble .meta { font-size: 11px; opacity: .7; }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); max-width: 560px; width: calc(100% - 32px); }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+#map { height: 520px; border-radius: 10px; border: 1px solid var(--line); z-index: 1; }
+.leaflet-container { font: inherit; }
+label.field { display: grid; gap: 4px; margin-bottom: 10px; }
+label.field > span { font-size: 13px; color: var(--muted); }
+.pick-search { margin-bottom: 6px; }
+.pick-list { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.pick-item { display: block; }
+.toggle { display: inline-flex; gap: 6px; align-items: center; }
+.pill { padding: 2px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--line); }
+@media (max-width: 640px) {
+  th.hide-sm, td.hide-sm { display: none; }
+  #map { height: 380px; }
+}
+
+/* ---- Kanäle ---- */
+.chanwrap { display: grid; grid-template-columns: 260px 1fr; gap: 14px; align-items: start; }
+.chanitems { display: grid; gap: 6px; margin-top: 8px; }
+.chanitem { display: grid; text-align: left; gap: 2px; background: transparent; color: var(--text);
+            border: 1px solid var(--line); padding: 8px 10px; }
+.chanitem.on { border-color: var(--accent); background: var(--bg); }
+.channame { font-weight: 600; word-break: break-word; }
+.chat.big { height: 55vh; max-height: none; align-content: start; }
+.bubble .who { font-size: 12px; font-weight: 600; margin-bottom: 1px; }
+.bubble.out .who { color: #fff; opacity: .85; }
+.daysep { text-align: center; font-size: 12px; color: var(--muted); margin: 6px 0 2px; }
+.unread-sep { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.unread-sep .line { flex: 1; height: 1px; background: var(--accent); opacity: .5; }
+.unread-sep .label { font-size: 12px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+dialog label { display: block; margin: 10px 0 4px; }
+
+/* Optionen-Menü (⋮) im Kanal-Chat: ersetzt die vorher immer sichtbaren Knöpfe/Schalter */
+.chat-menu-wrap { position: relative; }
+#chatMenuBtn { font-size: 16px; line-height: 1; padding: 6px 12px; }
+.chat-menu { position: absolute; right: 0; top: calc(100% + 4px); background: var(--card); border: 1px solid var(--line);
+             border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.25); padding: 6px; display: grid; gap: 2px;
+             min-width: 230px; z-index: 50; }
+.chat-menu-item { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: transparent;
+                   border: 0; border-radius: 6px; padding: 9px 10px; color: var(--text); cursor: pointer; }
+button.chat-menu-item:hover, label.chat-menu-item:hover { background: var(--bg); }
+.chat-menu-item.danger { color: var(--bad); }
+.chat-menu select { margin-left: auto; }
+#chatBack { display: none; }
+
+@media (max-width: 640px) {
+  .chanwrap { grid-template-columns: 1fr; }
+  .chat.big { height: 60vh; }
+  /* Wie bei einer Chat-App: erst die Kanalliste, nach dem Antippen nur noch der Chat (mit Zurück-Pfeil) */
+  .chanchat { display: none; }
+  .chanwrap.chat-open .chanlist { display: none; }
+  .chanwrap.chat-open .chanchat { display: block; }
+  #chatBack:not([hidden]) { display: inline-flex; }
+}
+.bubble .detail { font-size: 11px; opacity: .85; margin-top: 3px; border-top: 1px solid currentColor;
+                  border-top-color: rgba(128,128,128,.35); padding-top: 3px; }
+.bubble .hop { font-family: ui-monospace, monospace; }
+.mention { font-weight: 600; background: rgba(0,0,0,.22); border-radius: 5px; padding: 0 4px; }
+.mention.me { background: rgba(210,153,34,.45); }
+.bubble { touch-action: manipulation; }
+
+/* ---- Akku-Seite / Liniendiagramm ---- */
+:root { --c-series: #0e8a8a; --c-batt: #2a78d6; --c-temp: #c2570c; --c-batt2: #2da44e; --c-temp2: #8957e5; --lc-grid: #e1e5ec; --lc-axis: #6b7686; --lc-ring: #fff; }
+@media (prefers-color-scheme: dark) {
+  :root { --c-series: #2fb8b8; --c-batt: #3987e5; --c-temp: #e8793a; --c-batt2: #3fb950; --c-temp2: #a371f7; --lc-grid: #263041; --lc-axis: #8b97a8; --lc-ring: #171e28; }
+}
+.lc { position: relative; width: 100%; }
+.lc svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+.lc-grid { stroke: var(--lc-grid); stroke-width: 1; }
+.lc-axis { fill: var(--lc-axis); font-size: 11px; }
+.lc-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.lc-dot { stroke: var(--lc-ring); stroke-width: 2; }
+.lc-focus { stroke: var(--lc-ring); stroke-width: 2; }
+.lc-cross { stroke: var(--lc-axis); stroke-width: 1; }
+.lc-thresh { stroke: var(--bad); stroke-width: 1; stroke-dasharray: 4 4; }
+.lc-tip { position: absolute; pointer-events: none; background: var(--card); border: 1px solid var(--line);
+          border-radius: 8px; padding: 4px 8px; font-size: 12px; display: flex; flex-direction: column;
+          box-shadow: 0 2px 8px rgba(0,0,0,.15); white-space: nowrap; z-index: 2; }
+.lc-tip[hidden] { display: none; }
+.lc-tip strong { font-size: 14px; }
+.lc-tip span { color: var(--muted); }
+[hidden] { display: none !important; }
+a#csv { color: var(--accent); padding: 6px 10px; border: 1px solid var(--accent); border-radius: 8px; text-decoration: none; font-size: 13px; }
+.lc-table { max-height: 520px; overflow: auto; }
+.lc-table th { position: sticky; top: 0; background: var(--card); }
+
+/* ---- Hilfe-Tipps ---- */
+#tip { position: fixed; inset: auto; margin: 0; max-width: 320px; padding: 8px 10px; border-radius: 8px; z-index: 10000;
+       background: var(--text); color: var(--card); font-size: 13px; line-height: 1.35; border: 0; pointer-events: none;
+       box-shadow: 0 2px 10px rgba(0,0,0,.3); }
+#tipBtn { background: transparent; color: var(--muted); border: 1px solid var(--line); font-size: 12px; padding: 3px 9px; }
+#tipBtn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Nachrichtenblasen passen sich dem Text an (wie in der MeshCore-App) */
+.chat .bubble { width: fit-content; justify-self: start; }
+.chat .bubble.out { justify-self: end; }
+.pushbox { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); display: grid; gap: 6px; }
+.bell { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.bell b { font-weight: 700; }
+nav a.active .bell { color: #fff; }
+
+/* Repeater verwalten: Einstellungen als Zeilen (Beschriftung oben, Feld + Knöpfe darunter), damit nichts aus dem Handy-Bild läuft */
+.setgroup { margin-top: 14px; font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #6b7686); }
+.setrow { padding: 8px 0; border-top: 1px solid var(--line, rgba(128,128,128,.25)); }
+.setctl { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.setctl input, .setctl select { flex: 1; min-width: 0; }
+
+/* Hamburger-Knopf fürs Handy-Menü: nur sichtbar, wenn die Media Query unten ihn einblendet */
+.nav-toggle { display: none; font-size: 20px; line-height: 1; padding: 6px 10px; background: transparent; }
+.nav-backdrop { display: none; }
+
+/* Navigation auf schmalen Bildschirmen: ausklappbares Menü von links statt gestapelter/wischbarer Zeile */
+@media (max-width: 900px) {
+  .nav-toggle { display: inline-flex; order: -1; }
+  nav {
+    order: 10; position: fixed; top: 0; left: 0; bottom: 0; width: min(80vw, 300px);
+    flex-direction: column; flex-wrap: nowrap; overflow-y: auto; overflow-x: hidden;
+    background: var(--card); border-right: 1px solid var(--line); padding: 64px 10px 16px;
+    transform: translateX(-100%); transition: transform .2s ease; z-index: 1001;
+  }
+  nav.open { transform: translateX(0); }
+  nav a { flex: none; white-space: normal; padding: 10px 12px; }
+  /* z-index unter dem von header: nav ist ein Kind von header und dessen eigener Stapelkontext würde sonst
+     die Abblendfläche nicht durchlassen, egal welchen z-index nav selbst hat (nav steckt in header fest). */
+  .nav-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 999; }
+}

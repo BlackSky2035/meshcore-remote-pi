@@ -1,0 +1,53 @@
+# Kopieren nach config.toml und anpassen. config.toml wird NICHT ins Git übernommen.
+# Jede Einstellung lässt sich auch per Umgebungsvariable setzen (MC_<FELDNAME>, z. B.
+# MC_HOST, MC_PORT, MC_MODE, MC_SERIAL_PORT, MC_DB_PATH); die haben Vorrang.
+
+[server]
+# Standard: 127.0.0.1 (nur dieser Rechner)
+# Auf dem Pi ebenfalls 127.0.0.1 lassen und `tailscale serve` davor schalten (README).
+# 0.0.0.0 macht die Seite für jeden im LAN/WLAN erreichbar – ohne access_password (siehe unten) gibt es keinen Login!
+host = "127.0.0.1"
+port = 8000
+# Gemeinsames Passwort für die Oberfläche (leer = keine Anmeldung). Bei Zugriff über Tailscale/LAN empfohlen.
+# Die Datei config.toml niemals weitergeben oder ins Git legen.
+access_password = ""
+# Gegenseitige Überwachung mehrerer Stationen (z. B. zwei Pis): Jede Station bekommt ein eigenes Geheimwort (peer_token) und trägt die
+# anderen unter peers ein: "Name|https://adresse|Geheimwort der anderen; Name2|…". Ist eine Station 3 Minuten nicht erreichbar, kommt eine Meldung.
+station_name = ""
+# Geheimwort, mit dem der Watchdog den Wartungsmodus schalten darf (gleicher Wert wie app_control_token im Watchdog; leer = aus).
+control_token = ""
+peer_token = ""
+peers = ""
+# Port des separaten Watchdog-Programms (eigenes Repo); der Link „System ↗“ in der
+# Navigation zeigt dorthin. 0 = Link ausblenden.
+watchdog_port = 8100   # am Pi mit tailscale serve: 8443
+
+[node]
+# sim    = Simulator ohne Hardware
+# serial = Node per USB (getestet am Raspberry Pi)
+# Weitere Modi (tcp, ble) gibt es im Code, sie sind ungetestet und nicht dokumentiert.
+mode = "sim"
+
+# serial: "auto" sucht einen USB-Port, sonst festen Pfad angeben
+# Pi: /dev/ttyACM0 oder /dev/ttyUSB0
+serial_port = "auto"
+baudrate = 115200
+
+debug = false
+
+[storage]
+# SQLite-Datei (Nachrichten, Akkuverläufe, Regeln). Ordner wird angelegt.
+# db_path = "data/meshcore.db"
+# Ältere Einträge werden automatisch gelöscht (schont die SD-Karte)
+retention_days = 90
+
+[map]
+# Kartenkacheln. Standard: OpenStreetMap (braucht Internet).
+# Später z. B. ein lokaler Kachelserver für den Betrieb ohne Internet.
+# tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+
+[automation]
+# Schutz des gemeinsamen Funkmediums: gilt für ALLE automatischen Sendungen zusammen.
+# Nicht ohne Grund erhöhen.
+auto_min_gap_s = 15
+auto_max_per_hour = 30

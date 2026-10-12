@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshCore Remote</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#171e28">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="MeshCore">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+</head>
+<body>
+<header>
+  <button id="navToggle" class="nav-toggle" type="button" aria-label="Menü" aria-expanded="false">☰</button>
+  <span id="dot" class="dot" title="Node-Verbindung"></span>
+  <h1>MeshCore Remote</h1>
+  <nav id="nav">
+    <a href="#/dashboard" data-page="dashboard">Übersicht</a>
+    <a href="#/contacts" data-page="contacts">Kontakte</a>
+    <a href="#/channels" data-page="channels">Kanäle<span id="chanBell" class="bell" hidden title="Ungelesene Nachrichten in Kanälen"> 🔔<b id="chanBellN"></b></span></a>
+    <a href="#/room" data-page="room">Raum</a>
+    <a href="#/nodes" data-page="nodes">Knoten</a>
+    <a href="#/battery" data-page="battery">Akku</a>
+    <a href="#/sensors" data-page="sensors">Sensoren</a>
+    <a href="#/map" data-page="map">Karte</a>
+    <a href="#/network" data-page="network">Netz</a>
+    <a href="#/radio" data-page="radio">Funk</a>
+    <a href="#/search" data-page="search">Suche</a>
+    <a href="#/automation" data-page="automation">Automatik</a>
+    <a href="#/mynode" data-page="mynode">Mein Node</a>
+    <a id="sysLink" href="#" target="_blank" rel="noopener" hidden>System ↗</a>
+  </nav>
+  <button id="tipBtn" class="small" type="button" aria-pressed="false">Hilfe: aus</button>
+  <span id="ver" class="muted small"></span>
+</header>
+<div id="navBackdrop" class="nav-backdrop" hidden></div>
+<div id="scrollArea">
+  <div id="banner" class="banner" hidden></div>
+  <div id="maintBar" class="banner" hidden></div>
+  <main id="view"></main>
+</div>
+<script src="/static/vendor/leaflet/leaflet.js"></script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

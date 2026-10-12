@@ -1,0 +1,4 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+meshcore>=2.0
+cryptography>=42      # Web-Push (Verschlüsselung und Signatur)
