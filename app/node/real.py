@@ -1,8 +1,9 @@
 """Echter MeshCore-Node über die Python-Bibliothek `meshcore`.
 
 Unterstützt Verbindung per USB-Seriell, TCP oder BLE (siehe config.py).
-Feldnamen und Signaturen sind gegen meshcore 2.3.15 geprüft (Quelltext gelesen),
-aber noch NICHT mit echter Hardware getestet.
+Feldnamen und Signaturen sind gegen meshcore 2.3.15 geprüft (Quelltext gelesen).
+Im Betrieb auf einem Raspberry Pi mit einem Node per USB (seriell), aber nicht systematisch
+geprüft; TCP und BLE sind gar nicht getestet (siehe README und CLAUDE.md).
 
 Anpassungen an der Bibliothek sollen nur hier passieren, nicht in main.py.
 """

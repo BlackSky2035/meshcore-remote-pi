@@ -265,7 +265,7 @@ def test_render_worst_case_names_and_title_still_fit():
 
 
 def test_every_100_char_post_fits_with_typical_names_and_time():
-    for name in ("Alice_mob", "Alice (Sim)", "Anna"):
+    for name in ("Alice_2", "Alice (Sim)", "Anna"):
         out = line({**POST, "author": name, "text": "m" * 100, "id": 1234})
         assert len(out.encode()) <= 150 and not out.endswith("...") and "12:02" in out    # 100 Zeichen passen mit Uhrzeit, ohne gekürzt zu werden
 
