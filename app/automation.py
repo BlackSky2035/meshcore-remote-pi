@@ -108,13 +108,15 @@ class Automation:
     def __init__(self, node: BaseNode, store: AsyncStorage,
                  emit: Callable[[dict], Awaitable[None]], budget: SendBudget,
                  retention_days: int = 90,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time):
         self.node = node
         self.store = store
         self.emit = emit
         self.budget = budget
         self.retention_days = retention_days
         self._clock = clock
+        self._wall = wall                      # Wanduhr: letzter Lauf je Regel überlebt Neustarts (monotone Uhr nicht)
         self.paused = False
         self._next_run: dict[int, float] = {}
         self._reply_last: dict[tuple[int, str], float] = {}
@@ -143,8 +145,41 @@ class Automation:
                        "Automatik pausiert" if paused else "Automatik läuft wieder")
 
     def reschedule(self, rule_id: int) -> None:
-        """Nach Änderung einer Regel: Zeitplan neu beginnen."""
+        """Nach Änderung einer Regel: Zeitplan neu planen. Der letzte Lauf bleibt gespeichert, das Intervall
+        zählt also weiter ab dort (Speichern/Ein-Aus-Schalten löst keine sofortige Sendung aus)."""
         self._next_run.pop(rule_id, None)
+
+    @staticmethod
+    def _last_run_key(rule_id: int) -> str:
+        return f"rule_last_run_{rule_id}"
+
+    async def forget_rule(self, rule_id: int) -> None:
+        """Regel gelöscht: Zeitplan und gespeicherten letzten Lauf entfernen."""
+        self._next_run.pop(rule_id, None)
+        try:
+            await self.store.delete_setting(self._last_run_key(rule_id))
+        except Exception:
+            log.exception("Letzter Lauf von Regel %s nicht gelöscht", rule_id)
+
+    async def _wait_since_last_run(self, rule: dict) -> float:
+        """Wie lange bis zum nächsten erlaubten Lauf, gemessen am gespeicherten letzten Lauf (Wanduhr).
+        Höchstens ein Intervall: geht die Uhr des Pi nach dem Start noch falsch (keine Echtzeituhr), wird nie
+        länger gewartet. Fehler beim Lesen → 0 (dann gilt nur die Startverzögerung, wie früher)."""
+        interval = rule["config"]["interval_min"] * 60
+        try:
+            last = await self.store.get_setting(self._last_run_key(rule["id"]))
+            if not isinstance(last, (int, float)):
+                return 0.0
+            return min(max(interval - (self._wall() - float(last)), 0.0), float(interval))
+        except Exception:
+            log.exception("Letzter Lauf von Regel %s nicht lesbar", rule["id"])
+            return 0.0
+
+    async def _remember_run(self, rule_id: int) -> None:
+        try:
+            await self.store.set_setting(self._last_run_key(rule_id), self._wall())
+        except Exception:
+            log.exception("Letzter Lauf von Regel %s nicht gespeichert", rule_id)
 
     async def log(self, level: str, text: str, rule_id: int | None = None) -> None:
         await self.store.add_log(level, text, rule_id)
@@ -446,6 +481,7 @@ class Automation:
                 want_temp = bool(cfg.get("temperature", False)) and await self.budget.acquire()
                 try:
                     await self.poll_node(key, low_mv=cfg["low_mv"], temperature=want_temp)
+                    await self.log("info", f"Akku-Abfrage {await self._contact_label(key)} gesendet", rid)
                 except NodeError as e:
                     await self.log("warn", f"Akku-Abfrage {key[:8]} fehlgeschlagen: {e}", rid)
         elif rule["kind"] == "advert":
@@ -463,6 +499,7 @@ class Automation:
                 return
             try:
                 await self.ping_channel(cfg["channel"], cfg["text"])
+                await self.log("info", f"Kanal-Ping in {await self._channel_label(cfg['channel'])} gesendet: „{cfg['text']}“", rid)
             except NodeError as e:
                 await self.log("warn", f"Kanal-Ping Kanal {cfg['channel']} fehlgeschlagen: {e}", rid)
         elif rule["kind"] == "ping":
@@ -474,8 +511,27 @@ class Automation:
                     res = await self.ping_node(key, cfg["mode"], cfg["text"])
                     if not res["ok"]:
                         await self.log("warn", f"Ping {key[:8]}: keine Antwort", rid)
+                    else:
+                        rtt = f" ({res['rtt_ms']} ms)" if res.get("rtt_ms") is not None else ""
+                        await self.log("info", f"Ping {await self._contact_label(key)} gesendet: Antwort erhalten{rtt}", rid)
                 except NodeError as e:
                     await self.log("warn", f"Ping {key[:8]} fehlgeschlagen: {e}", rid)
+
+    async def _channel_label(self, idx: int) -> str:
+        """„Kanal #PING“ statt nur der Platznummer (Liste kommt beim echten Node aus dem Zwischenspeicher, kein Funk)."""
+        try:
+            name = next((c.get("name") for c in await self.node.channels() if c.get("idx") == idx), "")
+            if name:
+                return f"Kanal „{name}“"
+        except Exception:
+            pass
+        return f"Kanal {idx}"
+
+    async def _contact_label(self, key: str) -> str:
+        try:
+            return next((c["name"] for c in await self._contacts() if c["public_key"] == key), key[:8])
+        except Exception:
+            return key[:8]
 
     async def ping_channel(self, channel: int, text: str = "ping") -> dict:
         """Postet `text` unverändert in den Kanal (andere Bots antworten darauf)."""
@@ -504,12 +560,23 @@ class Automation:
             del self._next_run[stale]
         for index, rule in enumerate(rules):
             due = self._next_run.get(rule["id"])
-            if due is None:                    # erste Planung: verzögert und gestaffelt
-                self._next_run[rule["id"]] = now + STARTUP_DELAY_S + index * STAGGER_S
+            if due is None:                    # erste Planung: verzögert und gestaffelt, frühestens ein Intervall nach dem letzten Lauf
+                wait = await self._wait_since_last_run(rule)
+                delay = max(STARTUP_DELAY_S + index * STAGGER_S, wait)
+                self._next_run[rule["id"]] = now + delay
+                # nachvollziehbar machen, wann nach Start/Bearbeiten/Pause der nächste Lauf kommt (nur Datenbank, kein Funk)
+                when = f"in {round(delay / 60)} min" if delay >= 90 else f"in {round(delay)} s"
+                why = "Intervall seit dem letzten Lauf noch nicht um" if wait > STARTUP_DELAY_S + index * STAGGER_S else "Startverzögerung"
+                try:
+                    await self.log("info", f"Regel „{rule['name']}“ geplant: nächster Lauf {when} ({why})", rule["id"])
+                except Exception:
+                    log.exception("Planung nicht protokolliert")
                 continue
             if now >= due:
-                # Nächsten Termin VOR der Ausführung setzen: Fehler führen nie zu Dauerschleifen.
+                # Nächsten Termin VOR der Ausführung setzen (und den Lauf speichern): Fehler führen nie zu Dauerschleifen,
+                # und auch ein Neustart oder das Bearbeiten der Regel löst keine Sendung vor Ablauf des Intervalls aus.
                 self._next_run[rule["id"]] = now + rule["config"]["interval_min"] * 60
+                await self._remember_run(rule["id"])
                 try:
                     await self.run_rule(rule)
                 except Exception as e:         # Automatik darf nie den Server beenden

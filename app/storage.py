@@ -293,10 +293,14 @@ class Storage:
                          (str(idx), marks.get(idx, base)))
         return rows[0]["m"] if rows and rows[0]["m"] is not None else None
 
-    def mark_channel_read(self, idx: int) -> None:
+    def mark_channel_read(self, idx: int) -> int:
+        """Markiert den Kanal als gelesen und liefert die ALTE Markierung (Nachrichten-ID, bis zu der vorher gelesen war).
+        Die Webseite setzt damit „Ungelesene Nachrichten“ genau an die erste neuere eingehende Nachricht."""
+        base, marks = self._read_markers()              # stellt auch die Grundlinie sicher
+        before = marks.get(idx, base)
         rows = self._all("SELECT MAX(id) AS m FROM messages WHERE kind='channel' AND peer=?", (str(idx),))
-        self.set_setting(f"channel_read_{idx}", int(rows[0]["m"] or 0))
-        self._read_markers()                            # stellt die Grundlinie sicher
+        self.set_setting(f"channel_read_{idx}", max(int(rows[0]["m"] or 0), before))
+        return before
 
     def delete_channel_messages(self, idx: int) -> int:
         with self._lock:

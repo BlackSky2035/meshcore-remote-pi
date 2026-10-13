@@ -350,28 +350,18 @@ const status = await (await fetch('/api/status')).json();
   check(root.querySelector('#chatText').value === '@[Alice (Sim)] ', 'Doppeltippen setzt @[Name] ins Eingabefeld');
   root.querySelector('#chatText').value = '';
 
-  // Erwähnung mit Uhrzeit der empfangenen Nachricht (nur wenn Platz ist)
+  // Erwähnung ohne Uhrzeit: gesendet wird genau der Text im Eingabefeld
   const U = await imp('lib/util.js');
-  const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false});
-  const T0 = Math.floor(Date.now() / 1000) - 3600;
   check(U.mentionTag('Alice [Sim]') === '@[Alice Sim]' && U.mentionTag('  ') === '' && U.mentionTag(null) === '', 'Erwähnung: eckige Klammern im Namen werden entfernt, leerer Name ergibt keine Erwähnung');
-  check(U.withReceiptTime('@[Bob] hi', 'Bob', T0) === `@[Bob] (${hhmm(T0)}) hi`, 'Uhrzeit wird hinter die Erwähnung eingefügt');
-  check(U.withReceiptTime('@[Bob] ' + 'x'.repeat(132), 'Bob', T0) === '@[Bob] ' + 'x'.repeat(132), 'Zu lang: Uhrzeit entfällt, Text bleibt unverändert');
-  check(U.withReceiptTime('hi @[Bob]', 'Bob', T0) === 'hi @[Bob]' && U.withReceiptTime('@[Bob] hi', 'Bob', 0) === '@[Bob] hi', 'Ohne Erwähnung am Anfang oder ohne Zeit: unverändert');
-  check(U.withReceiptTime(`@[Bob] (${hhmm(T0)}) hi`, 'Bob', T0) === `@[Bob] (${hhmm(T0)}) hi`, 'Uhrzeit wird nicht doppelt eingefügt');
-  root.querySelector('#chat').insertAdjacentHTML('beforeend', `<div class="bubble" data-name="Alice (Sim)" data-ts="${T0}">Frage</div>`);
+  check(U.withReceiptTime === undefined, 'Uhrzeit-Einfügen ist entfernt');
+  root.querySelector('#chat').insertAdjacentHTML('beforeend', `<div class="bubble" data-name="Alice (Sim)">Frage</div>`);
   [...root.querySelectorAll('#chat .bubble[data-name]')].pop().dispatchEvent(new window.MouseEvent('dblclick', {bubbles: true}));
   root.querySelector('#chatText').value = '@[Alice (Sim)] ja, passt';
   root.querySelector('#chatText').dispatchEvent(new window.Event('input'));
-  check(root.querySelector('#chatCount').textContent.includes('Uhrzeit'), 'Zähler zeigt, dass die Uhrzeit mitgeschickt wird');
+  check(root.querySelector('#chatCount').textContent.trim() === `${'@[Alice (Sim)] ja, passt'.length} / 139`, 'Zähler zählt genau den eingegebenen Text');
   click(root.querySelector('#chatSend')); await sleep(700);
   const lastOut = [...root.querySelectorAll('#chat .bubble.out')].pop();
-  check(lastOut && lastOut.textContent.includes(`(${hhmm(T0)}) ja, passt`), 'Gesendete Nachricht enthält die Uhrzeit der empfangenen Nachricht');
-  root.querySelector('#chat').insertAdjacentHTML('beforeend', `<div class="bubble" data-name="Alice (Sim)" data-ts="${T0}">Noch eine Frage</div>`);   // der Chat wurde nach dem Senden neu geladen
-  [...root.querySelectorAll('#chat .bubble[data-name]')].pop().dispatchEvent(new window.MouseEvent('dblclick', {bubbles: true}));
-  root.querySelector('#chatText').value = '@[Alice (Sim)] ' + 'y'.repeat(120);
-  root.querySelector('#chatText').dispatchEvent(new window.Event('input'));
-  check(!root.querySelector('#chatCount').textContent.includes('Uhrzeit'), 'Zu lange Nachricht: keine Uhrzeit, der Zähler sagt es nicht');
+  check(lastOut && lastOut.textContent.includes('ja, passt') && !/\(\d{2}:\d{2}\)\s*ja, passt/.test(lastOut.textContent), 'Gesendete Erwähnung enthält keine Uhrzeit');
   root.querySelector('#chatText').value = '';
   root.querySelector('#chatText').dispatchEvent(new window.Event('input'));
 
@@ -379,14 +369,11 @@ const status = await (await fetch('/api/status')).json();
   {
     const other = () => [...items()].find(i => i.dataset.idx === '0');
     const uiTest = () => [...items()].find(i => i.textContent.includes('UI-Test'));
-    root.querySelector('#chat').insertAdjacentHTML('beforeend', `<div class="bubble" data-name="Alice (Sim)" data-ts="${T0}">Wechsel</div>`);
+    root.querySelector('#chat').insertAdjacentHTML('beforeend', `<div class="bubble" data-name="Alice (Sim)">Wechsel</div>`);
     [...root.querySelectorAll('#chat .bubble[data-name]')].pop().dispatchEvent(new window.MouseEvent('dblclick', {bubbles: true}));
     check(root.querySelector('#chatText').value === '@[Alice (Sim)] ', 'Erwähnung vor dem Kanalwechsel gesetzt');
     other().click(); await sleep(400);
     check(root.querySelector('#chatText').value === '', 'Kanalwechsel: Erwähnung aus dem vorigen Kanal wandert nicht mit');
-    root.querySelector('#chatText').value = '@[Alice (Sim)] hallo';
-    root.querySelector('#chatText').dispatchEvent(new window.Event('input'));
-    check(!root.querySelector('#chatCount').textContent.includes('Uhrzeit'), 'Kanalwechsel: Antwortbezug (Uhrzeit) des vorigen Kanals ist gelöscht');
     root.querySelector('#chatText').value = '';
     // Schneller Wechsel: die verspätete Antwort von Kanal 0 darf nicht unter dem Titel von UI-Test erscheinen
     fetchHook = u => u.startsWith('/api/channels/0/messages') ? fake([{direction: 'in', name: 'X', text: 'VERALTET-0', ts: Date.now() / 1000}], 500) : null;
@@ -425,6 +412,29 @@ const status = await (await fetch('/api/status')).json();
   check(!!sepBefore && !!sep && sep.nextElementSibling?.textContent.includes('neu 1'), 'Push-Sprung: „Ungelesene Nachrichten“ bleibt, wenn die Kontakte später kommen');
   un();
   window.location.hash = '';
+  if (window.history.state?.mcChat) window.history.back();
+  await sleep(100);
+}
+
+// ---- Kanäle: veralteter Zähler in der Liste – die Markierung kommt vom Server (read_upto), nicht aus dem Zähler
+{
+  const now = Math.floor(Date.now() / 1000);
+  const msgs = [{id: 1, direction: 'in', name: 'A', text: 'alt 1', ts: now - 400}, {id: 2, direction: 'in', name: 'A', text: 'alt 2', ts: now - 300},
+    {id: 3, direction: 'out', text: 'ich', ts: now - 200}, {id: 4, direction: 'in', name: 'B', text: 'gelesen', ts: now - 100},
+    {id: 5, direction: 'in', name: 'C', text: 'wirklich neu', ts: now - 50}];
+  fetchHook = u => u === '/api/channels' ? fake({channels: [{idx: 0, name: 'Öffentlich', unread: 4, hashtag: false, show_details: false, last_ts: now - 50}], max_channels: 40})
+    : u.startsWith('/api/channels/0/messages') ? fake(msgs)
+    : u.startsWith('/api/channels/0/read') ? fake({ok: true, read_upto: 4})
+    : u === '/api/contacts' ? fake([]) : null;
+  const root = fresh();
+  const un = await (await imp('pages/channels.js')).mount(root, ctx(status));
+  await sleep(150);
+  click(root.querySelector('.chanitem')); await sleep(300);
+  const sep = root.querySelector('#chat .unread-sep');
+  check(!!sep && sep.nextElementSibling?.textContent.includes('wirklich neu'), 'Ungelesen-Markierung nach Server-Markierung, nicht nach veraltetem Zähler');
+  check(!root.querySelector('.chanitem .bell'), 'Glocke verschwindet sofort beim Öffnen');
+  fetchHook = null;
+  un();
   if (window.history.state?.mcChat) window.history.back();
   await sleep(100);
 }
@@ -485,7 +495,19 @@ const status = await (await fetch('/api/status')).json();
   // Regel löschen
   click(root.querySelector('#rules [data-act=delete]')); await sleep(400);
   check(root.querySelectorAll('#rules tr[data-id]').length === 1, 'Regel gelöscht');
+  // Zwei aktive Kanal-Pings in denselben Kanal: Hinweis auf doppeltes Senden
+  const mk = name => fetch('/api/rules', {method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({kind: 'channel_ping', name, enabled: true, config: {channel: 0, interval_min: 60, text: 'ping'}})}).then(r => r.json());
+  const p1 = await mk('Ping A'), p2 = await mk('Ping B');
   un();
+  const un2 = await (await imp('pages/automation.js')).mount(root, ctx(status)); await sleep(500);
+  check(/pingt denselben Kanal/.test(root.querySelector('#rules').textContent), 'Kanal-Ping: Hinweis bei zwei Regeln für denselben Kanal');
+  await fetch(`/api/rules/${p2.id}`, {method: 'DELETE'});
+  un2();
+  const un3 = await (await imp('pages/automation.js')).mount(root, ctx(status)); await sleep(500);
+  check(!/pingt denselben Kanal/.test(root.querySelector('#rules').textContent), 'Kanal-Ping: kein Hinweis bei nur einer Regel');
+  await fetch(`/api/rules/${p1.id}`, {method: 'DELETE'});
+  un3();
 }
 
 // ---- Akku-Seite (die Akku-Regel aus dem Automatik-Test ist noch aktiv)

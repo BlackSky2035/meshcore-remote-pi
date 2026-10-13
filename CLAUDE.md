@@ -113,6 +113,11 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit (EU-Bänder: Duty Cycle).
 - Globaler Pausenschalter, bleibt über Neustarts erhalten.
 - Startverzögerung (20 s) und Staffelung (10 s) der Regeln nach Neustart; der nächste Termin
   wird vor der Ausführung gesetzt, damit Fehler nie zu Dauerschleifen führen.
+  Der letzte Lauf je Regel steht in `settings` (`rule_last_run_<id>`, Wanduhr): nach Neustart, Update oder Bearbeiten/Ein-Aus-Schalten einer Regel
+  läuft sie frühestens ein Intervall nach dem letzten Lauf (`_wait_since_last_run`, höchstens ein Intervall Wartezeit, falls die Uhr des Pi
+  nach dem Start noch falsch geht; Lesefehler → nur Startverzögerung). Löschen einer Regel entfernt den Eintrag (`forget_rule`).
+  Die Oberfläche warnt, wenn zwei aktive Kanal-Pings denselben Kanal anpingen. Tests: `tests/test_automation.py` (Neustart, Bearbeiten, Uhr).
+  Protokoll: jede erfolgreiche automatische Sendung (Kanal-Ping, Ping, Akku-Abfrage, Advert) und die erste Planung je Regel („geplant: nächster Lauf …“ mit Grund) werden mit `info` protokolliert; Namen über `_channel_label`/`_contact_label` (Fehler → Platznummer/Schlüssel). Test `test_automatic_sends_and_planning_are_logged`.
 - Akku-Warnung nur einmal pro Unterschreitung (mit 100 mV Hysterese).
 - Temperatur: eigene Funkanfrage (`repeater_telemetry`), verbraucht Sendebudget; ohne Sensor 24 h Pause
   (`NO_TEMP_BACKOFF_S`). Seite „Akku“: `/api/battery/*`, Temperatur gehört zu einer Akku-Messung,
@@ -177,9 +182,8 @@ liefert `bat` in mV, `import_contact` erwartet Bytes, `export_contact` liefert
   Kontaktliste in Namen auf (bei Mehrdeutigkeit wird die Kennung gezeigt).
 - Doppelklick auf eine fremde Nachricht setzt `@[Name] ` ins Eingabefeld (Erwähnung, keine echte
   Antwort-Funktion; das Format `@[Name]` ist eine Annahme über die MeshCore-App: seit App 1.27 gibt es Erwähnungen in Kanälen und Namen dürfen keine eckigen
-  Klammern mehr enthalten; Schreibweise `@[Name]` in der MeshCore-App bestätigt: eine Raum-Nachricht mit `@[Alice]` erscheint dort als blauer Erwähnungs-Chip; ungeprüft: Benachrichtigung „nur Erwähnungen“). Beim Senden fügt `withReceiptTime` (`lib/util.js`) die Uhrzeit des Empfangs der Nachricht ein
-  (`@[Name] (14:32) Text`), aber nur wenn der Text mit der Erwähnung beginnt und die Nachricht höchstens `maxlength` (139) Zeichen lang bleibt; sonst unverändert (nie kürzen).
-  `mentionTag` entfernt eckige Klammern aus dem Namen. Die Blase trägt dafür `data-ts` (Empfangszeit). Tests: UI-Smoke „Erwähnung“.
+  Klammern mehr enthalten; Schreibweise `@[Name]` in der MeshCore-App bestätigt: eine Raum-Nachricht mit `@[Alice]` erscheint dort als blauer Erwähnungs-Chip; ungeprüft: Benachrichtigung „nur Erwähnungen“). Es wird nur die Erwähnung eingefügt, keine Uhrzeit (die frühere Uhrzeit hinter der Erwähnung, `withReceiptTime`, ist entfernt): gesendet wird genau der Text im Eingabefeld.
+  `mentionTag` entfernt eckige Klammern aus dem Namen. Tests: UI-Smoke „Erwähnung“.
 - NICHT an Hardware getestet: ob der Heltec die RX-Log-Pakete immer liefert, und ob die
   Pfadangaben zu den Nachrichten passen.
 
@@ -284,7 +288,7 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 - `push.py`: Senden nur als Hintergrund-Task mit Zeitlimit; nie im Ereignispfad awaiten. Endpunkte nur `https` und mit Hostnamen (`validate_endpoint`, Schutz vor Zugriffen auf interne Ziele).
 - Service Worker (`static/sw.js`) bewusst ohne Zwischenspeicher der Seiten. Tippen auf eine Meldung bei schon offener App: der Service Worker schickt `{type: 'mc-open', url}` per `postMessage`, `app.js` setzt den Hash (bei gleichem Hash `route()`); `navigate()` wird nicht mehr benutzt (iOS-Home-Bildschirm-App unzuverlässig). Rückkehr aus dem Hintergrund (`visibilitychange`): WebSocket neu verbinden (wenn > 15 s weg oder nicht offen), Status neu laden und `_resume` an die Seite schicken; die Kanal-Seite lädt dann Liste und offenen Chat nach. Vom Entwickler auf dem iPhone bestätigt.
 - Getestet vom Entwickler mit iPhone, Mac und Windows-PC; Android und andere Browser nicht geprüft.
-- Ungelesen: Marker je Kanal in `settings` (`channel_read_<idx>`, Grundlinie `unread_baseline`); „einmal“-Push ist zustandslos über die Nachrichten-ID: gemeldet wird, wenn die Nachricht die älteste ungelesene des Kanals ist (`channel_first_unread`). Beim Löschen/Neuschlüsseln eines Kanals Marker löschen.
+- Ungelesen: Marker je Kanal in `settings` (`channel_read_<idx>`, Grundlinie `unread_baseline`; `POST /api/channels/{idx}/read` liefert die ALTE Markierung `read_upto`, der Marker springt nie zurück). `channels.js` setzt „Ungelesene Nachrichten“ vor die erste eingehende Nachricht mit `id > read_upto` (`unreadMark`, bleibt bis zum Schließen); der Zähler der Kanalliste ist nur Ersatz bei Fehlern (konnte veraltet sein → Sprung viel zu weit nach oben). Tests: `test_read_returns_previous_marker_for_the_unread_separator`, UI-Smoke „Server-Markierung“; „einmal“-Push ist zustandslos über die Nachrichten-ID: gemeldet wird, wenn die Nachricht die älteste ungelesene des Kanals ist (`channel_first_unread`). Beim Löschen/Neuschlüsseln eines Kanals Marker löschen.
 
 ## Eigener Node / Einstellungen („Mein Node“)
 - `nodeconfig.py` (`FIELDS`, `validate`, `NodeConfig`) + API `/api/node/spec|settings|time-sync|reboot` + Seite `pages/mynode.js`. Node-Methoden

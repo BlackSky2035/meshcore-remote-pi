@@ -417,3 +417,32 @@ async def test_once_mode_through_the_event_path_without_waiting_in_between(rt, c
     await rt.node.inject_channel_message(0, "Alice (Sim)", "neu")
     await rt.hub.drain(); await rt.push.drain()
     assert len(sent) == 2
+
+
+async def test_read_returns_previous_marker_for_the_unread_separator(rt, client):
+    """„Ungelesene Nachrichten“ steht genau vor der ersten neuen Nachricht: der Server nennt beim Lesen die alte Markierung."""
+    await client.get("/api/channels/unread")                       # Grundlinie
+    await rt.node.inject_channel_message(0, "Alice (Sim)", "alt")
+    await rt.hub.drain()
+    first = (await client.post("/api/channels/0/read")).json()
+    for t in ("neu 1", "neu 2"):
+        await rt.node.inject_channel_message(0, "Bob (Sim)", t)
+        await rt.hub.drain()
+    r = (await client.post("/api/channels/0/read")).json()
+    msgs = (await client.get("/api/channels/0/messages")).json()
+    unread = [m["text"] for m in msgs if m["direction"] == "in" and m["id"] > r["read_upto"]]
+    assert unread == ["neu 1", "neu 2"]
+    assert r["read_upto"] > first["read_upto"]
+    again = (await client.post("/api/channels/0/read")).json()     # nochmal öffnen: nichts mehr ungelesen
+    assert not [m for m in msgs if m["direction"] == "in" and m["id"] > again["read_upto"]]
+
+
+async def test_read_marker_never_moves_backwards(rt, client):
+    """Ausfall/Sonderfall: leerer Kanal unter der Grundlinie, die Markierung darf nicht zurückspringen (sonst wäre Altes wieder ungelesen)."""
+    await rt.node.inject_channel_message(1, "Alice (Sim)", "alt")
+    await rt.hub.drain()
+    await client.get("/api/channels/unread")                       # Grundlinie liegt jetzt über allem
+    r1 = (await client.post("/api/channels/2/read")).json()        # Kanal ohne Nachrichten
+    r2 = (await client.post("/api/channels/2/read")).json()
+    assert r2["read_upto"] >= r1["read_upto"] > 0
+    assert (await client.get("/api/channels/unread")).json()["total"] == 0

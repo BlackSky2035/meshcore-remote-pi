@@ -1,5 +1,5 @@
 import {get, post, put, del} from '../lib/api.js';
-import {esc, ago, fmtTime, mentions, mentionTag, withReceiptTime} from '../lib/util.js';
+import {esc, ago, fmtTime, mentions, mentionTag} from '../lib/util.js';
 import {pushState, enablePush, disablePush, savePrefs, testPush} from '../lib/push.js';
 
 function hue(name) {                       // gleicher Absender = gleiche Farbe
@@ -62,7 +62,7 @@ export async function mount(root, ctx) {
         </div>
         <div id="chatCount" class="muted small" style="text-align:right"></div>
         </div>
-        <p class="muted small" style="margin:6px 0 0">Doppelklick auf eine Nachricht erwähnt den Absender (<code>@[Name]</code>); die Uhrzeit der Nachricht wird angehängt, wenn Platz ist.</p>
+        <p class="muted small" style="margin:6px 0 0">Doppelklick auf eine Nachricht erwähnt den Absender (<code>@[Name]</code>).</p>
       </section>
     </div>
 
@@ -98,7 +98,9 @@ export async function mount(root, ctx) {
   let channels = [], maxCh = 0, current = null, editing = null, lastMsgs = [], contacts = [];
   let alive = true;
   let msgsFor = null;                        // Kanal, zu dem lastMsgs gehört
-  let lastUnread = 0;                         // Ungelesen-Zähler beim Öffnen: bleibt beim Neuzeichnen (Kontakte, Pfade) erhalten
+  // Wo „Ungelesene Nachrichten“ steht, festgelegt beim Öffnen und bis zum Schließen unverändert (Neuzeichnen, neue Nachrichten):
+  // {upto: ID} = alles Eingehende mit größerer ID ist ungelesen (vom Server, genau); {count: n} = Ersatz aus der Kanalliste.
+  let unreadMark = null;
   let draftFor = null;                        // Kanal, zu dem Eingabefeld und Erwähnung gehören
   let sending = false;                        // Senden läuft: Enter löst kein zweites Funkpaket aus
   // Verwaister Verlaufseintrag (Seite über das Menü verlassen, während ein Chat offen war): ersetzen, sonst gibt es später einen „toten“ Zurück-Schritt.
@@ -228,8 +230,12 @@ export async function mount(root, ctx) {
   // ---- Chat -----------------------------------------------------------------
   function dayLabel(ts) { return new Date(ts * 1000).toLocaleDateString(undefined, {weekday: 'long', day: 'numeric', month: 'long'}); }
 
-  // Markiert nur eingehende Nachrichten; die letzten `unreadCount` davon in `msgs` sind die ungelesenen.
-  function firstUnreadIndex(msgs, unreadCount) {
+  // Erste ungelesene (eingehende) Nachricht in `msgs`. Bevorzugt über die Nachrichten-ID vom Server: der Zähler aus der
+  // Kanalliste kann veraltet sein (Liste vor dem Öffnen geladen, Rückkehr aus dem Hintergrund) und setzte die Markierung dann viel zu weit oben.
+  function firstUnreadIndex(msgs, mark) {
+    if (!mark) return -1;
+    if (mark.upto != null) return msgs.findIndex(m => m.direction !== 'out' && Number(m.id) > mark.upto);
+    const unreadCount = mark.count;
     if (!unreadCount) return -1;
     let seen = 0;
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -246,10 +252,12 @@ export async function mount(root, ctx) {
     return page ? (el.closest('#scrollArea') || document.scrollingElement || el) : el;
   }
 
-  function renderMessages(msgs, unreadCount = 0, keep = false) {
-    lastMsgs = msgs; lastUnread = unreadCount;
+  // keep: false = beim Öffnen (zur Markierung „Ungelesen“, sonst ans Ende), 'bottom' = ans Ende (eigene Nachricht),
+  // 'follow' = nur ans Ende, wer schon unten war, true = Position behalten (nur neu zeichnen).
+  function renderMessages(msgs, keep = false) {
+    lastMsgs = msgs;
     const details = !!currentChannel()?.show_details;
-    const unreadAt = firstUnreadIndex(msgs, unreadCount);
+    const unreadAt = firstUnreadIndex(msgs, unreadMark);
     let lastDay = '';
     const html = msgs.map((m, i) => {
       const out = m.direction === 'out';
@@ -260,7 +268,7 @@ export async function mount(root, ctx) {
         ? '<div class="unread-sep"><span class="line"></span><span class="label">Ungelesene Nachrichten</span><span class="line"></span></div>' : '';
       const who = out ? 'Ich' : (m.name || 'Unbekannt');
       const color = out ? '' : `style="color:hsl(${hue(who)} 55% 45%)"`;
-      return `${sep}${unreadSep}<div class="bubble ${out ? 'out' : ''}" ${out ? '' : `data-name="${esc(m.name || '')}" data-ts="${Number(m.ts) || 0}" title="Doppelklick: Absender erwähnen"`}>
+      return `${sep}${unreadSep}<div class="bubble ${out ? 'out' : ''}" ${out ? '' : `data-name="${esc(m.name || '')}" title="Doppelklick: Absender erwähnen"`}>
         <div class="who" ${color}>${esc(who)}</div>${mentions(m.text, ownName())}
         ${details ? detailsHtml(m) : ''}
         <div class="meta">${fmtTime(m.ts)}</div></div>`;
@@ -272,33 +280,42 @@ export async function mount(root, ctx) {
     el.innerHTML = html || '<p class="muted">Noch keine Nachrichten in diesem Kanal.</p>';
     // „follow“ (neue Nachricht kam rein): nur nach unten springen, wer schon unten war – wer ältere Nachrichten liest, bleibt dort
     if (keep === true || (keep === 'follow' && !atEnd)) { sc.scrollTop = top; return; }
-    const marker = unreadAt >= 0 ? el.querySelector('.unread-sep') : null;
-    if (marker) marker.scrollIntoView({block: 'start'}); else sc.scrollTop = sc.scrollHeight;
+    const marker = keep === false && unreadAt >= 0 ? el.querySelector('.unread-sep') : null;
+    const place = () => { if (marker) marker.scrollIntoView({block: 'start'}); else sc.scrollTop = sc.scrollHeight; };
+    place();
+    // Beim Öffnen ändert sich das Layout oft noch kurz danach (Kopfzeile, Tastatur, Schrift): einmal nachziehen,
+    // aber nur, wenn inzwischen niemand selbst gescrollt hat.
+    if (keep === false) {
+      const at = sc.scrollTop;
+      (window.requestAnimationFrame || (f => setTimeout(f, 16)))(() => setTimeout(() => { if (alive && msgsFor === current && marker?.isConnected !== false && Math.abs(sc.scrollTop - at) < 2) place(); }, 120));
+    }
   }
 
-  async function reloadMessages(unreadCount = 0, keep = false) {
+  async function reloadMessages(keep = false, pending = null) {
     if (current === null) return;
     const idx = current;
-    const msgs = await get(`/api/channels/${idx}/messages?limit=200`);
+    const msgs = await (pending || get(`/api/channels/${idx}/messages?limit=200`));
     if (!alive || current !== idx) return;             // inzwischen anderer Kanal offen: alte Antwort verwerfen
     msgsFor = idx;
-    renderMessages(msgs, unreadCount, keep);
+    renderMessages(msgs, keep);
   }
 
-  // Als gelesen markieren (Server merkt es sich: Glocke und „einmal“-Push werden damit zurückgesetzt)
+  // Als gelesen markieren (Server merkt es sich: Glocke und „einmal“-Push werden damit zurückgesetzt).
+  // Antwort: bis zu welcher Nachrichten-ID vorher gelesen war (`read_upto`), null bei Fehler.
   function markRead(idx) {
-    post(`/api/channels/${idx}/read`).then(() => ctx.refreshUnread?.()).catch(() => {});
+    return post(`/api/channels/${idx}/read`).then(r => { ctx.refreshUnread?.(); return Number.isFinite(r?.read_upto) ? r.read_upto : null; })
+      .catch(() => null);
   }
 
   async function openChat(idx) {
     const c = channels.find(x => x.idx === idx);
     if (!c) return;
-    const unreadAtOpen = c.unread || 0;      // vor markRead erfassen, sonst ist der Zähler schon weg
+    const unreadAtOpen = c.unread || 0;      // Ersatz, falls der Server nicht sagt, bis wohin gelesen war
     // Ein Verlaufseintrag für den offenen Chat: „Zurück“ des Browsers/iOS-Randwisch schließt dann den Chat statt die Seite zu wechseln.
     if (current === null && !window.history.state?.mcChat) { try { window.history.pushState({mcChat: 1}, ''); } catch { /* ohne Verlauf */ } }
     current = idx;
     // Anderer Kanal: Entwurf und Erwähnung gehören zum vorigen Kanal, nicht mitnehmen.
-    if (draftFor !== idx) { $('chatText').value = ''; replyRef = null; updateChatCount(); }
+    if (draftFor !== idx) { $('chatText').value = ''; updateChatCount(); }
     draftFor = idx;
     wrap.classList.add('chat-open');
     $('chatBack').hidden = false;
@@ -309,11 +326,19 @@ export async function mount(root, ctx) {
     $('chatText').disabled = false; $('chatSend').disabled = sending;
     $('pushChanRow').hidden = !ps.subscribed;
     $('pushMode').value = ps.modes[idx] || 'off';
-    markRead(idx);
+    // Gelesen-Markierung und Verlauf gleichzeitig anfragen; der Server nennt die alte Markierung (genau, nie veraltet).
+    const readP = markRead(idx);
+    const msgsP = get(`/api/channels/${idx}/messages?limit=200`);
+    msgsP.catch(() => {});
+    c.unread = 0;                             // Glocke sofort weg; sonst nutzte ein schnelles Wiederöffnen den alten Zähler
     renderList();
-    try { await reloadMessages(unreadAtOpen); if (alive && current === idx) $('error').textContent = ''; }
+    unreadMark = null;
+    const upto = await readP;
+    if (!alive || current !== idx) return;
+    unreadMark = upto != null ? {upto} : {count: unreadAtOpen};
+    try { await reloadMessages(false, msgsP); if (alive && current === idx) $('error').textContent = ''; }
     catch (e) { if (alive && current === idx) $('error').textContent = e.message; }
-    if (alive && current === idx) $('chatText').focus();
+    if (alive && current === idx) { try { $('chatText').focus({preventScroll: true}); } catch { /* alt */ } }
   }
 
   function closeChat() {
@@ -373,23 +398,16 @@ export async function mount(root, ctx) {
   cleanups.push(() => window.removeEventListener('popstate', onPop));
 
   const chatMax = Number($('chatText').maxLength);
-  // Antwort auf eine Nachricht (Doppelklick): Absender und Empfangszeit der Nachricht. Die Uhrzeit wird beim Senden eingefügt, wenn Platz ist.
-  let replyRef = null;
-  const outgoing = raw => {
-    const text = raw.trim();
-    return replyRef ? withReceiptTime(text, replyRef.name, replyRef.ts, chatMax) : text;
-  };
   const updateChatCount = () => {
-    const raw = $('chatText').value, shown = outgoing(raw);
-    const n = shown.length;
-    $('chatCount').textContent = `${n} / ${chatMax}` + (shown !== raw.trim() ? ' · inkl. Uhrzeit der Nachricht' : '');
+    const n = $('chatText').value.trim().length;
+    $('chatCount').textContent = `${n} / ${chatMax}`;
     $('chatCount').classList.toggle('err', n >= chatMax);
   };
   $('chatText').oninput = updateChatCount;
   updateChatCount();
 
   async function sendChat() {
-    const text = outgoing($('chatText').value);
+    const text = $('chatText').value.trim();
     if (sending || current === null || !text) return;    // läuft schon: kein zweites Funkpaket
     const idx = current;
     sending = true;
@@ -397,8 +415,8 @@ export async function mount(root, ctx) {
     try {
       await post('/api/channel', {channel: idx, text});
       if (!alive) return;
-      if (draftFor === idx) { $('chatText').value = ''; replyRef = null; updateChatCount(); }
-      await reloadMessages();
+      if (draftFor === idx) { $('chatText').value = ''; updateChatCount(); }
+      await reloadMessages('bottom');
       if (alive) $('error').textContent = '';
     } catch (e) { if (alive) $('error').textContent = e.message; }
     finally { sending = false; if (alive) $('chatSend').disabled = current === null; }
@@ -410,13 +428,12 @@ export async function mount(root, ctx) {
       await put(`/api/channels/${c.idx}/view`, {show_details: e.target.checked});
       if (!alive) return;
       c.show_details = e.target.checked;
-      if (current === c.idx && msgsFor === c.idx) renderMessages(lastMsgs, lastUnread, true);
+      if (current === c.idx && msgsFor === c.idx) renderMessages(lastMsgs, true);
       $('error').textContent = '';
     } catch (err) { if (!alive) return; e.target.checked = !!c.show_details; $('error').textContent = err.message; }
   };
 
-  // Doppelklick auf eine fremde Nachricht: Absender im Eingabefeld erwähnen ("@[Name]"). Beim Senden kommt die Uhrzeit, zu der die Nachricht
-  // empfangen wurde, dazu ("@[Name] (14:32) Text"), solange die Nachricht dadurch nicht zu lang wird.
+  // Doppelklick auf eine fremde Nachricht: Absender im Eingabefeld erwähnen ("@[Name]"). Es wird nur die Erwähnung eingefügt, keine Uhrzeit.
   function mentionFrom(target) {
     const b = target.closest('.bubble[data-name]');
     if (!b || !b.dataset.name || $('chatText').disabled) return;
@@ -424,7 +441,6 @@ export async function mount(root, ctx) {
     if (!mention) return;
     window.getSelection?.()?.removeAllRanges();
     const tag = mention + ' ', input = $('chatText');
-    replyRef = {name: b.dataset.name, ts: Number(b.dataset.ts) || 0};
     if (!input.value.startsWith(tag)) input.value = tag + input.value;
     updateChatCount();
     input.focus();
@@ -518,7 +534,7 @@ export async function mount(root, ctx) {
   };
 
   // ---- Live -------------------------------------------------------------------
-  get('/api/contacts').then(c => { contacts = c; if (alive && current !== null && msgsFor === current) renderMessages(lastMsgs, lastUnread, true); }).catch(() => {});
+  get('/api/contacts').then(c => { contacts = c; if (alive && current !== null && msgsFor === current) renderMessages(lastMsgs, true); }).catch(() => {});
   await loadList();
   refreshPush();
   if (initial !== null && channels.some(c => c.idx === Number(initial))) await openChat(Number(initial));
@@ -527,13 +543,13 @@ export async function mount(root, ctx) {
       const mine = current !== null && Number(ev.payload.channel_idx) === current;
       if (mine && document.visibilityState === 'visible') markRead(current);     // Kanal ist offen und sichtbar: gelesen
       loadList();
-      if (mine) setTimeout(() => reloadMessages(0, 'follow').catch(() => {}), 300);
+      if (mine) setTimeout(() => reloadMessages('follow').catch(() => {}), 300);
     }),
     ctx.on('channel_read', () => loadList()),
     // zurück aus dem Hintergrund: verpasste Nachrichten nachladen (Liste mit Glocken, offener Chat)
-    ctx.on('_resume', () => { loadList(); if (current !== null) reloadMessages(0, 'follow').catch(() => {}); }),
+    ctx.on('_resume', () => { loadList(); if (current !== null) reloadMessages('follow').catch(() => {}); }),
     ctx.on('channel_repeat', ev => {
-      if (current !== null && Number(ev.payload.channel_idx) === current) reloadMessages(0, 'follow').catch(() => {});
+      if (current !== null && Number(ev.payload.channel_idx) === current) reloadMessages('follow').catch(() => {});
     }),
     ctx.on('new_contact', () => get('/api/contacts').then(c => { contacts = c; }).catch(() => {})),
     ctx.on('_status', () => {}),

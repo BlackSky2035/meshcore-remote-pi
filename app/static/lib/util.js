@@ -53,18 +53,6 @@ export function mentionTag(name) {
   return n ? `@[${n}]` : '';
 }
 
-// Beginnt `text` mit der Erwähnung von `name`, wird die Uhrzeit des Empfangs der Nachricht eingefügt ("@[Name] (14:32) Text") - aber nur,
-// wenn die Nachricht dadurch nicht länger als `max` Zeichen wird. Sonst bleibt der Text unverändert (Uhrzeit entfällt, nichts wird gekürzt).
-export function withReceiptTime(text, name, ts, max = 139) {
-  const tag = mentionTag(name);
-  if (!tag || !ts || !text.startsWith(tag + ' ')) return text;
-  const rest = text.slice(tag.length + 1);
-  if (/^\(\d{2}:\d{2}\)(\s|$)/.test(rest)) return text;               // schon vorhanden: nicht doppelt anhängen
-  const hhmm = new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false});
-  const out = `${tag} (${hhmm}) ${rest}`.trimEnd();
-  return out.length <= max ? out : text;
-}
-
 // Warnstufe einer Akku-Regel: im Formular in Prozent, gespeichert in mV. Wurde der Prozentwert nicht verändert, bleibt der gespeicherte mV-Wert
 // unverändert (sonst würde z. B. 3700 mV ≈ 58 % beim bloßen Speichern zu 3696 mV).
 export function lowMvFromPct(pct, origMv) {

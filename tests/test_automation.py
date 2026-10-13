@@ -571,3 +571,121 @@ async def test_prune_failure_does_not_stop_rules(rt):
     clock.advance(60)
     await a.tick()
     assert len(await rt.store.ping_history(REPEATER_OK, 0)) == 1      # Regel lief trotz kaputtem Aufräumen
+
+
+# ---------------------------------------------------------------- Zeitplan über Neustart/Bearbeiten hinweg
+async def _ping_rule(rt, interval_min=15):
+    return await rt.store.add_rule("channel_ping", "Kanal-Ping", {"channel": 0, "interval_min": interval_min, "text": "ping"})
+
+
+def _pings(rt):
+    return list(rt.node.sent_channel)
+
+
+async def test_restart_does_not_send_before_interval(rt):
+    """Neustart (Update, Absturz, Pi-Neustart): der Kanal-Ping kommt erst ein Intervall nach dem letzten, nicht nach 20 s."""
+    clock = FakeClock()
+    auto = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    await _ping_rule(rt, 15)
+    await auto.tick(); clock.advance(30); await auto.tick()
+    assert len(_pings(rt)) == 1
+    clock.advance(60)                                    # 1,5 min später: Programm startet neu
+    restarted = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    await restarted.tick(); clock.advance(30); await restarted.tick()
+    assert len(_pings(rt)) == 1, "nach dem Neustart darf nicht sofort wieder gepingt werden"
+    clock.advance(15 * 60)                               # Intervall seit dem letzten Ping um
+    await restarted.tick()
+    assert len(_pings(rt)) == 2
+
+
+async def test_editing_or_toggling_a_rule_does_not_send_immediately(rt):
+    clock = FakeClock()
+    auto = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    rid = await _ping_rule(rt, 15)
+    await auto.tick(); clock.advance(30); await auto.tick()
+    assert len(_pings(rt)) == 1
+    for enabled in (False, True, True):                 # aus, wieder an, unverändert speichern
+        await rt.store.update_rule(rid, "Kanal-Ping", {"channel": 0, "interval_min": 15, "text": "ping"}, enabled)
+        auto.reschedule(rid)
+        clock.advance(30); await auto.tick(); clock.advance(30); await auto.tick()
+    assert len(_pings(rt)) == 1
+    clock.advance(15 * 60); await auto.tick()
+    assert len(_pings(rt)) == 2
+
+
+async def test_new_rule_without_history_still_starts_after_startup_delay(rt):
+    clock = FakeClock()
+    auto = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    await _ping_rule(rt, 60)
+    await auto.tick(); clock.advance(30); await auto.tick()
+    assert len(_pings(rt)) == 1
+
+
+async def test_wrong_wall_clock_never_delays_more_than_one_interval(rt):
+    """Pi ohne Echtzeituhr: steht die Uhr nach dem Start in der Vergangenheit, wird trotzdem höchstens ein Intervall gewartet."""
+    mono, wall = FakeClock(), FakeClock()
+    rid = await _ping_rule(rt, 15)
+    await rt.store.set_setting(f"rule_last_run_{rid}", wall() + 10 * 86400)   # „letzter Lauf“ liegt 10 Tage in der Zukunft
+    auto = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=mono, wall=wall)
+    await auto.tick(); mono.advance(14 * 60); await auto.tick()
+    assert _pings(rt) == []
+    mono.advance(2 * 60); await auto.tick()
+    assert len(_pings(rt)) == 1
+
+
+async def test_unreadable_last_run_falls_back_to_startup_delay(rt):
+    clock = FakeClock()
+    auto = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    await _ping_rule(rt, 15)
+    orig = rt.store.get_setting
+
+    async def broken(key, default=None):
+        if key.startswith("rule_last_run_"):
+            raise RuntimeError("Datenbank weg")
+        return await orig(key, default)
+    rt.store.get_setting = broken
+    await auto.tick(); clock.advance(30); await auto.tick()
+    assert len(_pings(rt)) == 1                          # Fehler beim Lesen: Automatik läuft trotzdem
+
+
+async def test_deleting_a_rule_forgets_its_last_run(rt):
+    clock = FakeClock()
+    auto = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    rid = await _ping_rule(rt, 15)
+    await auto.tick(); clock.advance(30); await auto.tick()
+    assert await rt.store.get_setting(f"rule_last_run_{rid}") is not None
+    await rt.store.delete_rule(rid)
+    await auto.forget_rule(rid)
+    assert await rt.store.get_setting(f"rule_last_run_{rid}") is None
+
+
+async def test_automatic_sends_and_planning_are_logged(rt):
+    """Jede automatische Sendung und die Planung nach (Neu-)Start stehen im Protokoll, damit Pings nachvollziehbar sind."""
+    clock = FakeClock()
+    auto = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    await _ping_rule(rt, 15)
+    await auto.tick()
+    texts = [e["text"] for e in await rt.store.log(20)]
+    assert any("geplant: nächster Lauf in 20 s (Startverzögerung)" in t for t in texts)
+    clock.advance(30); await auto.tick()
+    texts = [e["text"] for e in await rt.store.log(20)]
+    assert any(t.startswith("Kanal-Ping in ") and "gesendet" in t for t in texts)
+    clock.advance(60)                                    # Neustart kurz danach
+    restarted = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    await restarted.tick()
+    texts = [e["text"] for e in await rt.store.log(20)]
+    assert any("Intervall seit dem letzten Lauf noch nicht um" in t for t in texts)
+
+
+async def test_failing_channel_lookup_still_logs_the_send(rt, monkeypatch):
+    """Ausfall: Kanalname nicht lesbar → Protokoll nennt die Platznummer, die Sendung bleibt gezählt."""
+    clock = FakeClock()
+    auto = Automation(rt.node, rt.store, rt.hub.emit, SendBudget(0, 1000), clock=clock, wall=clock)
+    await _ping_rule(rt, 15)
+
+    async def broken():
+        raise RuntimeError("kaputt")
+    monkeypatch.setattr(rt.node, "channels", broken)
+    await auto.tick(); clock.advance(30); await auto.tick()
+    assert len(_pings(rt)) == 1
+    assert any(e["text"].startswith("Kanal-Ping in Kanal 0 gesendet") for e in await rt.store.log(20))

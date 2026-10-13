@@ -60,7 +60,7 @@ Der **Watchdog** (Updates, Überwachung, Steuerung) hat eine eigene Oberfläche,
 | Seite | Inhalt |
 |-------|--------|
 | Übersicht | Node-Status, Advert senden, Live-Log |
-| Kanäle | Am Handy führt ein Wisch nach rechts im Chat zurück zur Kanalliste (wie bei WhatsApp folgt der Chat dem Finger und gleitet weg, wenn der Wisch weit oder schnell genug ist, sonst springt er zurück; Alternative: Pfeil oben links). Das Wischen gilt nur im Chat und nur in der einspaltigen Handy-Ansicht (egal wo der Finger ansetzt, auch neben der Karte, aber nicht im geöffneten Menü); im offenen Chat scrollt am Handy die ganze Seite, also auch ein Wisch neben dem Chat, Kopfzeile und Eingabefeld bleiben dabei stehen, und wer ältere Nachrichten liest, wird bei neuen nicht nach unten gerissen, an allen anderen Stellen hat es keine Funktion; auch das „Zurück“ des Browsers bzw. der Randwisch am iPhone schließt den Chat und führt zur Kanalliste statt zur vorherigen Seite; Kanäle anlegen (privat mit Schlüssel, `#hashtag`), bearbeiten, löschen – wird auf den Node geschrieben; Chat mit Verlauf je Kanal; Doppelklick (am Handy Doppeltippen) auf eine Nachricht erwähnt den Absender (`@[Name]`, eckige Klammern im Namen werden entfernt) und hängt beim Senden die Uhrzeit an, zu der diese Nachricht empfangen wurde (`@[Name] (14:32) Text`) – nur wenn die Nachricht dadurch nicht über 139 Zeichen wächst, sonst entfällt die Uhrzeit (der Zähler zeigt es an); pro Kanal schaltbar: Pfade eingehender Nachrichten und gehörte Repeats eigener Nachrichten (gespeichert wird immer) |
+| Kanäle | Am Handy führt ein Wisch nach rechts im Chat zurück zur Kanalliste (wie bei WhatsApp folgt der Chat dem Finger und gleitet weg, wenn der Wisch weit oder schnell genug ist, sonst springt er zurück; Alternative: Pfeil oben links). Das Wischen gilt nur im Chat und nur in der einspaltigen Handy-Ansicht (egal wo der Finger ansetzt, auch neben der Karte, aber nicht im geöffneten Menü); im offenen Chat scrollt am Handy die ganze Seite, also auch ein Wisch neben dem Chat, Kopfzeile und Eingabefeld bleiben dabei stehen, und wer ältere Nachrichten liest, wird bei neuen nicht nach unten gerissen, an allen anderen Stellen hat es keine Funktion; auch das „Zurück“ des Browsers bzw. der Randwisch am iPhone schließt den Chat und führt zur Kanalliste statt zur vorherigen Seite; Kanäle anlegen (privat mit Schlüssel, `#hashtag`), bearbeiten, löschen – wird auf den Node geschrieben; Chat mit Verlauf je Kanal; Doppelklick (am Handy Doppeltippen) auf eine Nachricht erwähnt den Absender (`@[Name]`, eckige Klammern im Namen werden entfernt) (nur die Erwähnung, ohne Uhrzeit; gesendet wird genau der Text im Eingabefeld); pro Kanal schaltbar: Pfade eingehender Nachrichten und gehörte Repeats eigener Nachrichten (gespeichert wird immer) |
 | Kontakte | suchen und filtern, per Kontaktkarte hinzufügen, löschen, Pfad zurücksetzen, Karte teilen, Chat mit Verlauf |
 | Knoten | Repeater/Rooms/Sensoren mit Akkustand, Erreichbarkeit, Verlauf, „Abfragen“ und Ping; nach jedem Ping/Abfragen steht über der Tabelle die Rückmeldung (wartet … → ✓ Antwort erhalten mit Laufzeit/SNR/Akku oder ✗ keine Antwort/Fehler), auch auf dem Handy |
 | Karte | alle Kontakte mit Position (Leaflet, lokal ausgeliefert) |
@@ -124,6 +124,8 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit. Die Automatik schützt e
   damit sich zwei Auto-Antworter nicht endlos hin und her schreiben. Dazu gibt es eine
   Abkühlzeit je Absender.
 - **Pause-Schalter** in der Oberfläche, bleibt über Neustarts erhalten.
+- **Intervall gilt auch über Neustarts:** Jede Regel merkt sich, wann sie zuletzt lief. Nach einem Update, Neustart oder wenn du eine Regel bearbeitest bzw. aus- und einschaltest, wird nicht sofort gesendet, sondern frühestens ein Intervall nach dem letzten Lauf. Pingen zwei aktive Regeln denselben Kanal, weist die Regelliste darauf hin.
+- **Jede automatische Sendung steht im Protokoll** (Kanal-Ping, Ping mit Antwortzeit, Akku-Abfrage, Advert), dazu nach jedem Start, Bearbeiten oder Einschalten die Planung: „Regel „…“ geplant: nächster Lauf in 15 min (Intervall seit dem letzten Lauf noch nicht um)“ bzw. „(Startverzögerung)“. So lässt sich nachvollziehen, warum und wann gesendet wurde.
 
 Regeln:
 - *Akku-Überwachung*: fragt Repeater regelmäßig ab, speichert den Akkustand und warnt
@@ -235,6 +237,9 @@ lässt sich nur mit angeschlossener Hardware prüfen.
   unterstützt, am App-Symbol); in der Kanalliste zeigt jeder Kanal seine eigene Zahl. Ein Kanal gilt als gelesen, sobald du ihn auf der
   Webseite geöffnet hast (oder eine Nachricht eintrifft, während er offen und sichtbar ist). Der Stand liegt auf dem Server und gilt für
   alle deine Geräte; bereits vorhandener Verlauf zählt nicht als ungelesen.
+  Beim Öffnen springt der Chat zur Linie „Ungelesene Nachrichten“. Wo sie steht, sagt der Server beim Öffnen (bis zu welcher Nachricht
+  vorher gelesen war), nicht der Zähler der Kanalliste: der konnte veraltet sein (z. B. nach Rückkehr aus dem Hintergrund) und die Linie
+  landete dann viel zu weit oben. Die Linie bleibt stehen, solange der Chat offen ist.
 - **„Einmal, bis gelesen“:** Es kommt nur bei der ersten neuen Nachricht eine Meldung. Danach schweigt der Kanal, egal wie viele folgen,
   bis du ihn auf der Webseite angesehen hast; die nächste neue Nachricht meldet sich dann wieder. (Waren beim Einschalten schon
   ungelesene Nachrichten da, kommt erst nach dem nächsten „gelesen“ wieder eine Meldung.) „Jede Nachricht“ meldet alles.

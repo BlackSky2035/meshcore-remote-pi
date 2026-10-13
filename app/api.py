@@ -431,9 +431,9 @@ def make_router(rt: Runtime) -> APIRouter:
         """Kanal als gelesen markieren (die Webseite ruft das beim Öffnen und bei neuen Nachrichten im offenen Kanal auf)."""
         if not 0 <= idx <= 63:
             raise HTTPException(status_code=422, detail="Kanalplatz ungültig")
-        await store.mark_channel_read(idx)
+        before = await store.mark_channel_read(idx)
         await rt.hub.emit({"type": "channel_read", "payload": {"channel_idx": idx}})
-        return {"ok": True}
+        return {"ok": True, "read_upto": before}
 
     @r.post("/channels")
     async def add_channel(body: ChannelIn) -> dict:
@@ -857,7 +857,7 @@ def make_router(rt: Runtime) -> APIRouter:
     async def delete_rule(rule_id: int) -> dict:
         if not await store.delete_rule(rule_id):
             raise HTTPException(status_code=404, detail="Regel nicht gefunden")
-        auto.reschedule(rule_id)
+        await auto.forget_rule(rule_id)
         return {"ok": True}
 
     return r

@@ -106,7 +106,10 @@ export async function mount(root, ctx) {
     }
     if (r.kind === 'advert') return `alle ${c.interval_min} min · ${c.flood ? 'netzweit (Flood)' : 'nur direkte Nachbarn'}`;
     if (r.kind === 'channel_ping') {
-      return `Kanal „${channelName(c.channel)}“ · alle ${c.interval_min} min · Text „${c.text}“`;
+      // Zwei aktive Kanal-Pings in denselben Kanal senden doppelt – darauf hinweisen (nicht verbieten)
+      const twins = rules.filter(o => o.id !== r.id && o.enabled && r.enabled && o.kind === 'channel_ping' && o.config.channel === c.channel);
+      return `Kanal „${channelName(c.channel)}“ · alle ${c.interval_min} min · Text „${c.text}“` +
+        (twins.length ? ` · Achtung: Regel „${twins.map(o => o.name).join('“, „')}“ pingt denselben Kanal, es wird doppelt gesendet` : '');
     }
     const where = [c.direct !== false ? 'Direktnachrichten' : null,
       ...(c.channels || []).map(i => `Kanal „${channelName(i)}“`)].filter(Boolean).join(', ');
