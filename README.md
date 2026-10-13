@@ -230,7 +230,7 @@ lässt sich nur mit angeschlossener Hardware prüfen.
 - **Zum Startbildschirm hinzufügen** (installierbare Web-App mit eigenem Icon, ohne Browserleiste): Android/Chrome: Menü →
   „App installieren“; iPhone/iPad: Safari → Teilen → „Zum Home-Bildschirm“.
 - **Push je Kanal:** Seite „Kanäle“ → Kasten „Benachrichtigungen“ → „Auf diesem Gerät aktivieren“, danach im Chat des Kanals
-  die Art wählen: *aus*, *jede Nachricht* oder *einmal, bis gelesen*. Optional auch bei Akku-Warnungen. „Test“ schickt eine Probe-Meldung. Jedes Gerät hat eigene Einstellungen.
+  die Art wählen: *aus*, *jede Nachricht* oder *einmal, bis gelesen*. Optional auch bei Akku-Warnungen. „Test“ schickt eine Probe-Meldung. Tippst du auf eine Meldung, während die App schon offen im Hintergrund liegt, springt sie direkt in den richtigen Kanal; kommst du aus einer anderen App zurück, lädt die Seite verpasste Nachrichten nach. Jedes Gerät hat eigene Einstellungen.
 - **Ungelesen:** In der Kopfzeile steht bei „Kanäle“ eine Glocke mit der Zahl aller ungelesenen Nachrichten (auch im Tab-Titel und, wo
   unterstützt, am App-Symbol); in der Kanalliste zeigt jeder Kanal seine eigene Zahl. Ein Kanal gilt als gelesen, sobald du ihn auf der
   Webseite geöffnet hast (oder eine Nachricht eintrifft, während er offen und sichtbar ist). Der Stand liegt auf dem Server und gilt für

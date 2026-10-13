@@ -282,7 +282,7 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 ## Push (Web-Push)
 - `webpush.py` = eigene RFC-8291/8292-Umsetzung (nur `cryptography`), NICHT durch `pywebpush` ersetzen (`http-ece` lässt sich mit neuem setuptools nicht installieren). Der RFC-Testvektor in `tests/test_push.py` muss grün bleiben.
 - `push.py`: Senden nur als Hintergrund-Task mit Zeitlimit; nie im Ereignispfad awaiten. Endpunkte nur `https` und mit Hostnamen (`validate_endpoint`, Schutz vor Zugriffen auf interne Ziele).
-- Service Worker (`static/sw.js`) bewusst ohne Zwischenspeicher der Seiten.
+- Service Worker (`static/sw.js`) bewusst ohne Zwischenspeicher der Seiten. Tippen auf eine Meldung bei schon offener App: der Service Worker schickt `{type: 'mc-open', url}` per `postMessage`, `app.js` setzt den Hash (bei gleichem Hash `route()`); `navigate()` wird nicht mehr benutzt (iOS-Home-Bildschirm-App unzuverlässig). Rückkehr aus dem Hintergrund (`visibilitychange`): WebSocket neu verbinden (wenn > 15 s weg oder nicht offen), Status neu laden und `_resume` an die Seite schicken; die Kanal-Seite lädt dann Liste und offenen Chat nach. Vom Entwickler auf dem iPhone bestätigt.
 - Getestet vom Entwickler mit iPhone, Mac und Windows-PC; Android und andere Browser nicht geprüft.
 - Ungelesen: Marker je Kanal in `settings` (`channel_read_<idx>`, Grundlinie `unread_baseline`); „einmal“-Push ist zustandslos über die Nachrichten-ID: gemeldet wird, wenn die Nachricht die älteste ungelesene des Kanals ist (`channel_first_unread`). Beim Löschen/Neuschlüsseln eines Kanals Marker löschen.
 

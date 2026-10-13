@@ -35,9 +35,10 @@ function dispatch(ev) {
   });
 }
 
+let ws = null;
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const sock = ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onmessage = m => {
     let d;
     try { d = JSON.parse(m.data); } catch { return; }      // kaputte Nachricht ignorieren
@@ -55,8 +56,35 @@ function connectWS() {
       dispatch(d.event);
     }
   };
-  ws.onclose = () => setTimeout(connectWS, 2000);
+  sock.onclose = () => { if (ws === sock) setTimeout(() => { if (ws === sock) connectWS(); }, 2000); };
 }
+
+// Zurück aus dem Hintergrund (andere App, gesperrter Bildschirm): iOS hält die Seite dort an, die WebSocket-Verbindung
+// ist dann oft tot, ohne es zu melden, und Ereignisse fehlen. Darum neu verbinden und die aktive Seite neu laden lassen.
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (!hiddenAt) return;
+  const away = Date.now() - hiddenAt;
+  hiddenAt = 0;
+  if (away > 15000 || !ws || ws.readyState !== WebSocket.OPEN) {
+    const old = ws;
+    ws = null;
+    try { old && old.close(); } catch { /* egal */ }
+    connectWS();
+  }
+  refreshStatus();
+  dispatch({type: '_resume', away_ms: away});
+});
+
+// Tippen auf eine Push-Meldung bei schon offener App: der Service Worker schickt das Ziel hierher (sw.js)
+function openFromPush(url) {
+  let hash = '';
+  try { hash = new URL(url, location.href).hash; } catch { return; }
+  if (!hash) hash = '#/';
+  if (location.hash === hash) route(); else location.hash = hash;
+}
+try { navigator.serviceWorker?.addEventListener('message', e => { if (e.data && e.data.type === 'mc-open') openFromPush(e.data.url); }); } catch { /* ohne Service Worker */ }
 
 // ---- Status-Leiste ---------------------------------------------------------
 const state = {config: {tile_url: '', mode: ''}, status: null, unread: {total: 0, channels: {}}};

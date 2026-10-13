@@ -23,7 +23,13 @@ self.addEventListener('notificationclick', event => {
   event.waitUntil((async () => {
     const all = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
     for (const c of all) {
-      if ('focus' in c) { await c.focus(); if ('navigate' in c) { try { await c.navigate(url); } catch { /* egal */ } } return; }
+      if ('focus' in c) {
+        // Offene App: die Seite selbst springt zum Ziel (app.js, Nachricht „mc-open“). `navigate()` klappt in der
+        // iOS-Home-Bildschirm-App nicht zuverlässig und ändert bei gleichem Pfad und anderem #-Teil oft gar nichts.
+        try { c.postMessage({type: 'mc-open', url}); } catch { /* egal */ }
+        try { await c.focus(); } catch { /* egal */ }
+        return;
+      }
     }
     if (self.clients.openWindow) await self.clients.openWindow(url);
   })());

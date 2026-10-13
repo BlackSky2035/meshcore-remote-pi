@@ -530,6 +530,8 @@ export async function mount(root, ctx) {
       if (mine) setTimeout(() => reloadMessages(0, 'follow').catch(() => {}), 300);
     }),
     ctx.on('channel_read', () => loadList()),
+    // zurück aus dem Hintergrund: verpasste Nachrichten nachladen (Liste mit Glocken, offener Chat)
+    ctx.on('_resume', () => { loadList(); if (current !== null) reloadMessages(0, 'follow').catch(() => {}); }),
     ctx.on('channel_repeat', ev => {
       if (current !== null && Number(ev.payload.channel_idx) === current) reloadMessages(0, 'follow').catch(() => {});
     }),
