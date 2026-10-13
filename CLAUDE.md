@@ -97,7 +97,7 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit (EU-Bänder: Duty Cycle).
 - Globales Sendebudget (`SendBudget`): Mindestabstand (Standard 15 s) und Obergrenze pro
   Stunde (Standard 30), einstellbar in `[automation]`.
 - Mindestintervall 5 Minuten für Ping- und Akku-Regeln, 15 Minuten für `channel_ping` (in `schemas.py`), Abkühlzeit je
-  Absender mindestens 30 s, Antworttext höchstens 150 Zeichen.
+  Absender mindestens 30 s, Antworttext höchstens 150 Zeichen. Die fertige Auto-Antwort (Erwähnung + gefüllte Platzhalter) wird auf `REPLY_MAX_BYTES` = 139 Byte (UTF-8) gekürzt, die führende Erwähnung bleibt immer erhalten (`Automation._reply_text`, `cut_bytes`). „enthält“-Treffer: ganzes Wort per `(?<!\w)…(?!\w)`, damit greifen auch Auslöser wie „!ping“. `SendBudget.acquire(n)` bucht n Plätze (alle oder keinen). Aufräumen (`retention_days`) läuft gleich nach dem Start und auch bei Pause.
 - Antworten der Regelart `auto_reply` beginnen mit einer Erwähnung des Absenders (`@[Name] `) und werden nie auf Nachrichten beantwortet, die selbst mit einer Erwähnung (`MENTION_RE`)
   oder mit `[auto]` beginnen (Schleifenschutz). Das Präfix `[auto] ` (`AUTO_PREFIX`) benutzt nur noch der Raum-Bot (`room.py`, Schleifenschutz auch zwischen zwei Stationen). Nur normaler Text
   Der Platzhalter `{name}` wird ebenfalls als Erwähnung `@[Name]` eingefügt (`mention_tag`, eckige Klammern im Namen entfernt); beginnt der gefüllte Text schon mit einer Erwähnung, kommt keine zweite davor.
@@ -256,8 +256,8 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 - Ablauf wie in der MeshCore-App: Anmelden (`send_login_sync`), dann Textbefehle (`send_cmd`, Antwort = `CONTACT_MSG_RECV` mit `txt_type 1`). Diese
   Antworten werden in `RealNode._forward` NICHT an Hub/Chat weitergegeben (sonst Direktnachrichten-Verlauf + Auto-Antwort-Risiko).
 - Regeln (nicht aufweichen): GESPERRT `erase`, `set/get prv.key`; RISKANT (Server verlangt `confirm`, HTTP 409): Neustart/Ausschalten, `password`, Funkparameter,
-  `set tx`, `set repeat off`, `region`, `setperm` u. a. (Liste `RISKY`); GEHEIM (nie im Verlauf/Protokoll, Antwort geschwärzt): `password`, `set guest.password`;
-  OHNE ANTWORT (nicht warten, Sitzung endet): `reboot`, `poweroff`, `shutdown`, `clkreboot`. Höchstens 1 Befehl je Repeater alle 2 s, keine Zeilenumbrüche,
+  `set tx`, `set repeat off`, `region`, `setperm` u. a. (Liste `RISKY`); GEHEIM (nie im Verlauf/Protokoll, Antwort geschwärzt; mit `MC_DEBUG` wird das Protokoll der Bibliothek dabei kurz stummgeschaltet): `password`, `set guest.password`, `get guest.password`;
+  OHNE ANTWORT (nicht warten, Sitzung endet): `reboot`, `poweroff`, `shutdown`, `clkreboot`. Höchstens 1 Funkpaket je Repeater alle 2 s auf allen Wegen (Anmelden, Befehle, Nachbarn, Zugriffsliste, Abmelden; `_radio_slot`; nach einer Anmeldung wird die Restzeit gewartet, sonst „Zu schnell“); harmlos ist nur genau `set repeat on`; keine Zeilenumbrüche,
   höchstens 150 Byte. Einstellungen nur über den Katalog `SETTINGS` mit Wertebereichen (Quelle: MeshCore-CLI-Doku docs.meshcore.io/cli_commands).
 - Passwörter: nur im Arbeitsspeicher; auf Wunsch in `data/repeater_secrets.json` (Rechte 600, NICHT in der Datenbank/Sicherung). Die API gibt nie ein Passwort zurück.
   Es gibt keine Benutzeranmeldung im Programm: Wer die Oberfläche erreicht, kann mit gemerktem Passwort verwalten.
@@ -268,7 +268,7 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 ## USB-Überwachung
 - `usb.py`: `list_ports()` (wirft nie), `candidates()` nach Punkten (Gerätename, bekannte VIDs, Text), `resolve_port(configured, ports)`.
   Mehrere Kandidaten → bester, Warnung im Log. `serial_port = "auto"` oder fester Pfad.
-- `supervisor.py` (alle 2 s): Port verschwunden → sofort trennen; Herzschlag alle 30 s (`node.alive()`), 2× keine Antwort → trennen + neu;
+- `supervisor.py` (alle 2 s): Port verschwunden → sofort trennen (Vergleich über aufgelöste Pfade, `usb.port_present`, by-id-Symlinks gehen; eine gescheiterte Port-Abfrage trennt nie); Herzschlag alle 30 s (`node.alive()`; läuft gerade ein Befehl am Node, zählt das als Lebenszeichen, begrenzt ist nur die Abfrage selbst), 2× keine Antwort → trennen + neu;
   nicht verbunden + Gerät da → nach 2 s Wartezeit verbinden, bei Fehlern Abstand 3→30 s; Zustand an `UsbMonitor`.
 - Zustände: `ok`, `no_device`, `no_response`, `no_permission` (dialout-Hinweis). Jeder Wechsel steht in `usb_events`; Verfügbarkeit 24 h/7 Tage
   wird daraus gerechnet (Zeiten, in denen die App selbst nicht lief, zählen als „unverändert“). Meldung nach 60 s Ausfall genau einmal
@@ -284,13 +284,13 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 - `push.py`: Senden nur als Hintergrund-Task mit Zeitlimit; nie im Ereignispfad awaiten. Endpunkte nur `https` und mit Hostnamen (`validate_endpoint`, Schutz vor Zugriffen auf interne Ziele).
 - Service Worker (`static/sw.js`) bewusst ohne Zwischenspeicher der Seiten.
 - Getestet vom Entwickler mit iPhone, Mac und Windows-PC; Android und andere Browser nicht geprüft.
-- Ungelesen: Marker je Kanal in `settings` (`channel_read_<idx>`, Grundlinie `unread_baseline`); „einmal“-Push ist zustandslos (nur wenn Zähler ≤ 1). Beim Löschen/Neuschlüsseln eines Kanals Marker löschen.
+- Ungelesen: Marker je Kanal in `settings` (`channel_read_<idx>`, Grundlinie `unread_baseline`); „einmal“-Push ist zustandslos über die Nachrichten-ID: gemeldet wird, wenn die Nachricht die älteste ungelesene des Kanals ist (`channel_first_unread`). Beim Löschen/Neuschlüsseln eines Kanals Marker löschen.
 
 ## Eigener Node / Einstellungen („Mein Node“)
 - `nodeconfig.py` (`FIELDS`, `validate`, `NodeConfig`) + API `/api/node/spec|settings|time-sync|reboot` + Seite `pages/mynode.js`. Node-Methoden
   `node_settings/node_apply/node_set_time/node_reboot` in `base.py`, `sim.py`, `real.py`. Oberfläche ist aus `/api/node/spec` gebaut; der Server prüft alles selbst.
 - Riskant (HTTP 409 ohne `confirm`): Funkparameter (nur alle vier zusammen schreiben), Pfad-Kennung, Standort in Adverts „immer senden“, Neustart.
-  Unveränderte Werte → 422 „Nichts zu ändern“. Breite/Länge nur zusammen. Sendeleistung ≤ `max_tx_power` des Nodes.
+  Unveränderte Werte → 422 „Nichts zu ändern“. Breite/Länge nur zusammen (werden immer als Paar geschrieben, `node_apply` lehnt eine einzelne Koordinate ab). Sendeleistung ≤ `max_tx_power` des Nodes.
 - Bewusst NICHT enthalten: Privatschlüssel export/import, Werkseinstellung. Keine Funk-Voreinstellungen eingebaut (nicht verifiziert).
 - Standardfunktionen am echten Node getestet und funktionsfähig; nicht jedes Detail geprüft, z. B.: alle Schreibbefehle, Reihenfolge, Wirkung von `set_other_params_from_infos`, `path_hash_mode` (Firmware ab 1.14),
   Bedeutung der Werte 0/1/2 bei Telemetrie/Standort-Weitergabe (aus Erinnerung, Zahlen werden deshalb immer mit angezeigt), `set_time`.
@@ -310,12 +310,12 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 - **Funk** (`stats.py`, `radio_stats`, `/api/stats`): `node_stats()` (meshcore `get_stats_core/radio/packets`, nur lokal, keine Funkzeit), alle 30 min gesichert.
   Sendezeit-Anteil ist Richtgröße; Zähler setzen sich beim Neustart zurück (Differenz < 0 wird übersprungen).
 - **Sicherung** (`configbackup.py`, `/api/backup/*`, Abschnitt in „Mein Node“): Node-Einstellungen, Kanäle (Schlüssel nur auf Wunsch), Regeln; KEIN Privatschlüssel, keine
-  Passwörter. Wiederherstellen = Trockenlauf + alles prüfen, dann schreiben; riskante Werte brauchen weiter `confirm`; belegte Kanalplätze nur mit `overwrite_channels`.
+  Passwörter. Wiederherstellen = Trockenlauf + alles prüfen (Kanalplätze gegen `max_channels` des Nodes, doppelte Plätze abgelehnt, falsche Typen → 422), dann schreiben in der Reihenfolge Kanäle, Regeln, Node-Einstellungen (je Kanal Verlauf, `channel_view_`/`channel_read_` gelöscht); riskante Werte brauchen weiter `confirm`; belegte Kanalplätze nur mit `overwrite_channels`.
 - **Suche/Stichworte** (`/api/search`, `/api/push/keywords`, `pages/search.js`): LIKE-Suche (Teilwort), Stichwort-Push an ALLE angemeldeten Geräte, auch bei stummem Kanal.
 - **Advert-Zeitplan**: Regelart `advert` (mindestens 60 min, netzweit mindestens 360 min), zählt zum Sendebudget.
 - **Raum-Bot** (`room.py`, Tabellen `room_posts/room_members`, `/api/room/*`, `pages/room.js`): Befehle `/p /neu /verlauf /anmelden /abmelden /hilfe` per Direktnachricht von
   bekannten Clients; Antworten mit `[auto] `-Präfix (Schleifenschutz auch zwischen zwei Pis), über das gemeinsame Sendebudget; 100 Zeichen je Beitrag (`POST_MAX`, früher 140: Beitrag + „[auto] Raum [12 14:32] @[Name] “ passte nicht in 150), 20 s Pause und 20 Beiträge/h je Mitglied,
-  höchstens 10 Angemeldete, Zustellung 1 Beitrag je Angemeldetem alle 20 s. Erscheint in der MeshCore-App als normaler Kontakt, nicht als Room. Nicht an Hardware getestet.
+  höchstens 10 Angemeldete; alle 20 s je Angemeldetem höchstens 1 Beitrag, insgesamt höchstens 3 Sendungen je Durchlauf (`DELIVER_PER_CYCLE`); nach unbestätigter Zustellung Wartezeit je Mitglied 60 s, verdoppelt bis 30 min, bei Erfolg zurückgesetzt; ein unerreichbares Mitglied hält die anderen nicht auf. 20 s Pause gilt für JEDEN Befehl (in der Pause still ignoriert); bei pausierter Automatik schweigt auch der Raum. Eine bestätigte Nachricht bucht `CONFIRM_TX_MAX` = 3 Plätze im Sendebudget (bis zu 3 Funkversuche). Erscheint in der MeshCore-App als normaler Kontakt, nicht als Room. Nicht an Hardware getestet.
   Zustellformat (`Room.render`): `[auto] <Titel> [Nr Zeit] @[Autor] Text` – Autor als Erwähnung (`mention_tag`, Klammern im Namen entfernt; bei `author_key == 'web'` „Web: Text“), Zeit = wann der Beitrag
   beim Raum ankam (`room_posts.ts`, Ortszeit), nur Uhrzeit wenn heute, sonst mit Datum. Länge: nur wenn die ganze Zeile (mit `[auto] `) ≤ `LINE_MAX` = 150 (Zähler „0/150“ der App), erst ohne Datum, dann ohne Zeit;
   Gemessen wird in BYTES (UTF-8, Umlaute zählen 2, Emojis 4). Passt es auch ohne Zeit nicht (ältere, längere Beiträge, lange Namen), wird der Text mit „...“ gekürzt (`cut_to_bytes`) und `_line` kappt jede
@@ -330,6 +330,8 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
   Ringpuffer 300 Einträge (Zeit, Art), Arbeitsspeicher, nie Inhalte. Neue Node-Methode, die Funk auslöst → in `TX_KINDS` eintragen. `/api/sends` steht in `OPEN_API` (auth.py) und prüft selbst:
   Sitzung ODER `control_token` wie der Wartungsmodus (`_control_auth` in `api.py`); der Watchdog fragt nur nach einem Einbruch. Tests: `tests/test_sendlog.py`.
 - Navigation: auf schmalen Bildschirmen eine wischbare Zeile (`style.css`, Media Query 900 px).
+- Kanal-Chat am Handy: Wisch nach rechts = zurück zur Kanalliste (`pages/channels.js`), nur in der einspaltigen Ansicht (`max-width: 640px`, wie in `style.css`), nicht wenn er im Menü (`#nav`, `.nav-backdrop`) beginnt; sonst hat Wischen nirgends eine Funktion. Ein offener Chat legt einen Verlaufseintrag an (`mcChat`), Browser-Zurück/iOS-Randwisch schließt den Chat; ein verwaister Eintrag wird beim Öffnen der Seite ersetzt. Doppeltippen erwähnt (eigene Erkennung, weil iOS `dblclick` nicht zuverlässig liefert). Entwurf und Erwähnung bleiben beim Kanalwechsel nicht hängen. Offener Chat am Handy: Es scrollt die ganze Seite (`#scrollArea`), nicht ein innerer Bereich; Kopf (`.chat-head`) und Eingabe (`.chat-compose`) sind `sticky`. `scroller()` in `channels.js` wählt den Bereich. Neue Nachrichten springen nur nach unten, wenn man schon unten war (`reloadMessages(0, 'follow')`).
+- Seiten verwerfen veraltete Antworten über einen Ladezähler und `alive` (z. B. Akku, Sensoren, Karte, Kanal-/Kontakt-Chat); neue Ladefunktionen genauso bauen. Senden per Enter ist gegen Doppelsenden gesperrt, solange gesendet wird.
 
 ## Wartungsmodus (App)
 - `maintenance.py` (`Maintenance`), API `/api/maintenance` (GET/POST {minutes}/DELETE), Karte „Wartung“ auf der Übersicht, Leiste `#maintBar` auf allen Seiten.

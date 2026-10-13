@@ -10,6 +10,7 @@ export async function mountRepeaterPanel(host, node, onClose) {
   const base = `/api/repeater/${key}`;
   const cat = await get('/api/repeater/catalog');
   let st = await get(base);
+  if (!host.isConnected) return () => {};             // Seite schon verlassen, während der Katalog lud
   let alive = true;
   let busy = false;
   let abort = false;
@@ -41,9 +42,11 @@ export async function mountRepeaterPanel(host, node, onClose) {
     </div>`;
   const $ = id => host.querySelector('#' + id);
 
-  const msg = (text, cls = '') => { $('repMsg').className = 'small ' + cls; $('repMsg').textContent = text || ''; };
+  // Panel geschlossen oder Seite verlassen, während eine Funkanfrage lief: nichts mehr anzeigen (Elemente sind weg).
+  const msg = (text, cls = '') => { if (!alive) return; $('repMsg').className = 'small ' + cls; $('repMsg').textContent = text || ''; };
 
   function renderLogin() {
+    if (!alive) return;
     $('repLogin').hidden = st.logged_in;
     $('repBody').hidden = !st.logged_in;
     if (st.logged_in) { $('repWho').textContent = `angemeldet als ${st.admin ? 'Admin' : 'Gast'}`; return; }
@@ -67,7 +70,7 @@ export async function mountRepeaterPanel(host, node, onClose) {
       }, 'Anmelden … (Funk, kann bis zu 20 s dauern)');
     };
     const f = $('repForget');
-    if (f) f.onclick = async () => { st = await del(`${base}/password`); renderLogin(); };
+    if (f) f.onclick = () => run(async () => { st = await del(`${base}/password`); renderLogin(); });
   }
 
   async function run(fn, working) {
@@ -76,7 +79,11 @@ export async function mountRepeaterPanel(host, node, onClose) {
     host.querySelectorAll('button').forEach(b => { if (b.id !== 'repClose' && b.id !== 'repStop') b.disabled = true; });
     if (working) msg(working);
     try { await fn(); }
-    catch (e) { msg(e.message, 'err'); if (/Nicht angemeldet/.test(e.message)) { st = await get(base).catch(() => st); renderLogin(); } }
+    catch (e) {
+      if (!alive) return;                                  // Fehler nach dem Schließen (z. B. fehlende Elemente) nicht melden
+      msg(e.message, 'err');
+      if (/Nicht angemeldet/.test(e.message)) { st = await get(base).catch(() => st); renderLogin(); }
+    }
     finally {
       busy = false;
       if (alive) host.querySelectorAll('button').forEach(b => { b.disabled = false; });
@@ -103,6 +110,7 @@ export async function mountRepeaterPanel(host, node, onClose) {
 
   async function sendCommand(command) {
     const res = await withConfirm(c => post(`${base}/command`, {command, confirm: c}));
+    if (!alive) return res;
     term(res.command, res.text, res.ok);
     msg(res.ok ? '' : 'Keine Antwort vom Repeater.', res.ok ? '' : 'err');
     if (res.no_reply) { st = await get(base); renderLogin(); }
@@ -110,8 +118,9 @@ export async function mountRepeaterPanel(host, node, onClose) {
   }
 
   async function loadHistory() {
+    if (!alive) return;
     $('repTerm').innerHTML = '';
-    try { (await get(`${base}/history`)).forEach(h => term(h.command, h.reply, h.ok)); } catch { /* egal */ }
+    try { const h = await get(`${base}/history`); if (alive) h.forEach(x => term(x.command, x.reply, x.ok)); } catch { /* egal */ }
   }
 
   function settingRow(s) {
@@ -135,6 +144,7 @@ export async function mountRepeaterPanel(host, node, onClose) {
 
   async function readOne(k) {
     const res = await post(`${base}/command`, {command: `get ${k}`});
+    if (!alive) return false;
     term(res.command, res.text, res.ok);
     if (res.ok) { const text = (res.replies[0] || '').trim(); field(k).value = text.startsWith('>') ? text.slice(1).trim() : text; }
     return res.ok;
@@ -152,6 +162,7 @@ export async function mountRepeaterPanel(host, node, onClose) {
       const k = b.dataset.write, v = field(k).value;
       await run(async () => {
         const res = await withConfirm(c => post(`${base}/setting`, {name: k, value: v, confirm: c}));
+        if (!alive) return;
         term(res.command, res.text, res.ok);
         msg(res.ok ? 'Gesetzt.' : 'Keine Antwort vom Repeater: nicht sicher, ob die Änderung angekommen ist. Mit „Lesen“ prüfen.', res.ok ? 'ok' : 'err');
         if (k === 'guest.password') field(k).value = '';
@@ -166,17 +177,18 @@ export async function mountRepeaterPanel(host, node, onClose) {
       const keys = cat.settings.filter(s => s.kind !== 'secret').map(s => s.key);
       for (let i = 0; i < keys.length && !abort && alive; i++) {
         $('repProg').textContent = `${i + 1} / ${keys.length}: ${keys[i]}`;
-        if (!(await readOne(keys[i]))) { msg(`Keine Antwort bei „${keys[i]}“: abgebrochen.`, 'err'); break; }
+        if (!(await readOne(keys[i]))) { if (!alive) return; msg(`Keine Antwort bei „${keys[i]}“: abgebrochen.`, 'err'); break; }
         await sleep(cat.min_gap_s * 1000 + 300);
       }
-      $('repProg').textContent = '';
+      if (alive) $('repProg').textContent = '';
     });
-    $('repStop').hidden = true;
+    if (alive) $('repStop').hidden = true;
   };
   $('repStop').onclick = () => { abort = true; };
 
   $('repNb').onclick = () => run(async () => {
     const r = await get(`${base}/neighbours`);
+    if (!alive) return;
     $('repLists').innerHTML = `<p>${r.total} Nachbarn laut Repeater (gezeigt: ${r.neighbours.length})</p><table><thead><tr><th>Nachbar</th><th>zuletzt gehört</th><th>SNR</th></tr></thead><tbody>${
       r.neighbours.map(n => `<tr><td>${esc(n.name || n.prefix)}</td><td>vor ${n.secs_ago >= 3600 ? Math.round(n.secs_ago / 3600) + ' h' : Math.round(n.secs_ago / 60) + ' min'}</td><td>${n.snr} dB</td></tr>`).join('')}</tbody></table>`;
     msg('');
@@ -184,6 +196,7 @@ export async function mountRepeaterPanel(host, node, onClose) {
 
   $('repAcl').onclick = () => run(async () => {
     const r = await get(`${base}/acl`);
+    if (!alive) return;
     $('repLists').innerHTML = `<table><thead><tr><th>Teilnehmer</th><th>Recht</th></tr></thead><tbody>${
       r.entries.map(n => `<tr><td>${esc(n.name || n.prefix)}</td><td>${esc(n.perm_label)}</td></tr>`).join('')}</tbody></table>`;
     msg('');
@@ -193,7 +206,7 @@ export async function mountRepeaterPanel(host, node, onClose) {
     e.preventDefault();
     const c = $('repCmd').value.trim();
     if (!c) return;
-    await run(async () => { await sendCommand(c); $('repCmd').value = ''; }, 'Sende … (Funk)');
+    await run(async () => { await sendCommand(c); if (alive) $('repCmd').value = ''; }, 'Sende … (Funk)');
   };
 
   $('repLogout').onclick = () => run(async () => { st = await post(`${base}/logout`); renderLogin(); msg('Abgemeldet.'); });

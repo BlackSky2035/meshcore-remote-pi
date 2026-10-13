@@ -159,3 +159,21 @@ async def test_auto_reply_rule_with_channels_and_limits(client):
     old = {"kind": "auto_reply", "name": "alt", "config": {"match": "ping", "reply": "pong"}}
     cfg = (await client.post("/api/rules", json=old)).json()["config"]
     assert (cfg["direct"], cfg["channels"], cfg["max_per_hour"]) == (True, [], 10)
+
+
+async def test_commit_is_determined_once_not_per_request(client, monkeypatch):
+    """git rev-parse lief früher bei jedem /api/status und /api/version blockierend in der Ereignisschleife."""
+    import subprocess
+    from app import api
+    calls = []
+    real = subprocess.run
+
+    def run(*a, **k):
+        calls.append(a)
+        return real(*a, **k)
+    monkeypatch.setattr(subprocess, "run", run)
+    for _ in range(3):
+        v = (await client.get("/api/version")).json()
+        st = (await client.get("/api/status")).json()
+    assert len(calls) == 0
+    assert set(v) == {"app", "commit", "mode", "maintenance_until"} and v["commit"] == st["commit"] == api.git_commit()

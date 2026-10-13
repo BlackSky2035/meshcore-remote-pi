@@ -1,6 +1,7 @@
 """REST-Endpunkte."""
 from __future__ import annotations
 
+import functools
 import secrets
 import subprocess
 import time
@@ -32,7 +33,9 @@ from .schemas import (
 )
 
 
+@functools.lru_cache(maxsize=1)
 def git_commit() -> str:
+    """Einmal je Prozess ermitteln (ändert sich nur mit einem Neustart): git blockiert, darf also nicht in jeder Anfrage laufen."""
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                              capture_output=True, text=True, timeout=3)
@@ -51,6 +54,7 @@ def _key(value: str) -> str:
 def make_router(rt: Runtime) -> APIRouter:
     r = APIRouter(prefix="/api")
     node, store, auto = rt.node, rt.store, rt.automation
+    git_commit()                               # schon beim Aufbau ermitteln, nicht in der ersten Anfrage (Ereignisschleife)
 
     def wrap(e: NodeError) -> HTTPException:
         return HTTPException(status_code=502, detail=str(e))

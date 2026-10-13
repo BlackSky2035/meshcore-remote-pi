@@ -30,7 +30,10 @@ export async function mount(root, ctx) {
     const q = $('q').value.trim();
     try {
       const {results} = await get(`/api/search?q=${encodeURIComponent(q)}${$('kind').value ? `&kind=${$('kind').value}` : ''}`);
-      const mark = t => esc(t).replace(new RegExp(esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), m => `<mark>${m}</mark>`);
+      // Rohtext am Suchbegriff teilen (Gruppe behält die Treffer), dann jedes Stück einzeln escapen: sonst trifft z. B. „amp“ oder „39“
+      // die schon erzeugten Entities (&amp; &#39;) und zerstört sie.
+      const re = q ? new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi') : null;
+      const mark = t => re ? String(t ?? '').split(re).map((part, i) => i % 2 ? `<mark>${esc(part)}</mark>` : esc(part)).join('') : esc(t);
       $('res').innerHTML = results.length ? results.map(m => `<div class="setrow"><div class="muted">${esc(fmtDateTime(m.ts))} · ${m.kind === 'channel' ? 'Kanal' : 'Direkt'} „${esc(m.where)}“ · ${m.direction === 'out' ? 'gesendet' : esc(m.name || 'empfangen')}</div>
         <div>${mark(m.text)}</div></div>`).join('') : '<span class="muted">Keine Treffer.</span>';
     } catch (err) { $('err').textContent = err.message; }

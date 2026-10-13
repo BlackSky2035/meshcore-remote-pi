@@ -49,10 +49,15 @@ export async function mount(root, ctx) {
   key = contacts.length ? contacts[0].public_key : null;
   fillOptions();
 
+  // Ladezähler: eine ältere, später eintreffende Antwort überschreibt nie die neuere Anzeige.
+  let seq = 0;
   async function show() {
+    const my = ++seq, k = key, h = hours;
+    const stale = () => !alive || my !== seq;
     charts.forEach(c => c.destroy()); charts = [];
-    if (!key) { $('latest').textContent = ''; $('charts').hidden = true; return; }
-    const {latest} = await get(`/api/sensors/${key}`);
+    if (!k) { $('latest').textContent = ''; $('charts').hidden = true; return; }
+    const {latest} = await get(`/api/sensors/${k}`);
+    if (stale()) return;
     $('latest').innerHTML = latest.length
       ? `<table><tbody>${latest.map(l => `<tr><td>${esc(lab(l.type))}${l.channel ? ` <span class="muted">(Kanal ${l.channel})</span>` : ''}</td>
           <td><strong>${esc(String(+l.value.toFixed(2)).replace('.', ','))} ${esc(unit(l.type))}</strong></td>
@@ -62,15 +67,16 @@ export async function mount(root, ctx) {
     host.hidden = !latest.length;
     host.innerHTML = latest.map((l, i) => `<h3 style="margin-top:${i ? 16 : 0}px">${esc(lab(l.type))}${l.channel ? ` (Kanal ${l.channel})` : ''}</h3><div data-ch="${i}"></div>`).join('');
     // Feste x-Achse über den gewählten Zeitraum bis jetzt, nicht nur über die Spanne der Messpunkte.
-    const xMax = Date.now() / 1000, xMin = xMax - hours * 3600;
+    const xMax = Date.now() / 1000, xMin = xMax - h * 3600;
     for (const [i, l] of latest.entries()) {
-      const {rows} = await get(`/api/sensors/${key}/history?type=${encodeURIComponent(l.type)}&channel=${l.channel}&hours=${hours}`);
-      if (!alive) return;
+      const {rows} = await get(`/api/sensors/${k}/history?type=${encodeURIComponent(l.type)}&channel=${l.channel}&hours=${h}`);
+      if (stale()) return;
       charts.push(lineChart(host.querySelector(`[data-ch="${i}"]`), rows.map(r => ({x: r.ts, y: r.value})),
         {unit: unit(l.type), decimals: 1, colorVar: '--c-series', label: lab(l.type), ariaLabel: `${lab(l.type)}-Verlauf`, xMin, xMax}));
     }
   }
-  const safe = fn => async () => { try { $('error').textContent = ''; await fn(); } catch (e) { $('error').textContent = e.message; } };
+  // Ereignis weiterreichen (die Zeitraum-Knöpfe brauchen e.target).
+  const safe = fn => async e => { try { $('error').textContent = ''; await fn(e); } catch (err) { if (alive) $('error').textContent = err.message; } };
   $('nodeSearch').oninput = safe(async () => { if (fillOptions()) await show(); });
   $('node').onchange = safe(async () => {
     const k = $('node').value;

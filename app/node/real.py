@@ -10,6 +10,7 @@ Anpassungen an der Bibliothek sollen nur hier passieren, nicht in main.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import random
@@ -38,6 +39,20 @@ def find_serial_port() -> str:
     from .. import usb
 
     return usb.resolve_port("auto", usb.list_ports())
+
+
+@contextlib.contextmanager
+def _quiet_library_log():
+    """Mit MC_DEBUG schreibt die Bibliothek gesendete Rohdaten als Hex ins Protokoll (Passwörter inklusive).
+    Für Anmeldung und geheime Befehle wird ihr Logger kurz auf INFO gestellt und danach immer zurückgesetzt."""
+    lib = logging.getLogger("meshcore")
+    old = lib.level
+    if lib.getEffectiveLevel() < logging.INFO:
+        lib.setLevel(logging.INFO)
+    try:
+        yield
+    finally:
+        lib.setLevel(old)
 
 
 def _locked(fn):
@@ -78,22 +93,40 @@ class RealNode(BaseNode):
     def connected(self) -> bool:
         return bool(self.mc and self.mc.is_connected)
 
-    @_locked
+    ALIVE_TIMEOUT_S = 10.0
+    ALIVE_LOCK_WAIT_S = 2.0
+
     async def alive(self) -> bool:
-        """Herzschlag: kleine Abfrage, die der Node beantworten muss. Fehler/Zeitüberschreitung = nicht lebendig."""
+        """Herzschlag: kleine Abfrage, die der Node beantworten muss. Fehler/Zeitüberschreitung = nicht lebendig.
+        Läuft gerade ein anderer Befehl (Repeater-Status, Nachricht mit Bestätigung … oft 15–70 s), zählt das als Lebenszeichen:
+        sonst würde das Warten auf die Sperre als „Node tot“ gewertet. Zeitlich begrenzt ist nur die Abfrage selbst."""
         if not self.connected:
             return False
+        if self._cmd_lock.locked():
+            return True
+        # nicht wait_for(acquire()): unter Python 3.11 kann die Sperre dabei bei einer Zeitüberschreitung belegt bleiben
+        acq = asyncio.ensure_future(self._cmd_lock.acquire())
+        done, _ = await asyncio.wait({acq}, timeout=self.ALIVE_LOCK_WAIT_S)
+        if not done:                                # ein anderer Befehl kam zuvor dran und läuft noch
+            acq.add_done_callback(lambda f: None if f.cancelled() or f.exception() else self._cmd_lock.release())
+            acq.cancel()
+            return self.connected
         try:
-            res = await asyncio.wait_for(self.mc.commands.send_device_query(), 10)
+            res = await asyncio.wait_for(self.mc.commands.send_device_query(), self.ALIVE_TIMEOUT_S)
             return res is not None and res.type != self._EventType.ERROR
         except Exception:
             return False
+        finally:
+            self._cmd_lock.release()
 
     async def connect(self) -> None:
         from meshcore import EventType, MeshCore
 
         self._EventType = EventType
         self._channels_cache = None         # neue Verbindung: Kanäle einmal frisch lesen, nicht die alte Liste wiederverwenden
+        self._chan_idx_by_name = {}
+        self._max_channels = None           # Werte des Geräts: am selben Anschluss kann jetzt ein anderer Node hängen
+        self._battery = None
         self.public_key = None
         s = self.s
         try:
@@ -144,9 +177,14 @@ class RealNode(BaseNode):
             rx = getattr(EventType, "RX_LOG_DATA", None)
             if rx is not None:
                 self.mc.subscribe(rx, self._on_rx_log)
-            await self.channels()            # die Bibliothek braucht die Kanalschlüssel zum Entschlüsseln
         except Exception as e:
             log.warning("Funk-Log-Entschlüsselung nicht verfügbar: %s", e)
+        try:
+            # die Bibliothek braucht die Kanalschlüssel zum Entschlüsseln; ein stummer Platz darf das Verbinden nicht
+            # über das Zeitlimit des Supervisors treiben (sonst Dauerschleife aus Verbinden/Abbrechen)
+            await asyncio.wait_for(self.channels(), self.CONNECT_CHANNELS_S)
+        except Exception as e:
+            log.warning("Kanäle beim Verbinden nicht lesbar (%s) – werden später erneut gelesen", str(e) or type(e).__name__)
 
     async def _on_rx_log(self, event: Any) -> None:
         """Reicht nur entschlüsselte Gruppen-Textpakete weiter (alles andere wäre zu viel Verkehr)."""
@@ -285,6 +323,8 @@ class RealNode(BaseNode):
     # Ein Kanalplatz gilt als leer, wenn Name leer und Schlüssel nur Nullen sind.
     DEFAULT_MAX_CHANNELS = 40
     CHANNEL_RETRY_DELAY_S = 0.3
+    CHANNEL_TIMEOUT_S = 3.0          # je Abfrage eines Platzes (lokal über USB, eigentlich sofort)
+    CONNECT_CHANNELS_S = 15.0        # alle Plätze beim Verbinden zusammen, bleibt unter STEP_TIMEOUT_S des Supervisors
 
     @_locked
     async def max_channels(self) -> int:
@@ -307,7 +347,10 @@ class RealNode(BaseNode):
         (echte Hardware antwortet gelegentlich kurz nicht, siehe USB-Überwachung)."""
         last = None
         for attempt in range(tries):
-            res = await self.mc.commands.get_channel(idx)
+            try:
+                res = await asyncio.wait_for(self.mc.commands.get_channel(idx), self.CHANNEL_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                res = None
             if res is not None and res.type != self._EventType.ERROR:
                 return res
             last = res
@@ -469,7 +512,9 @@ class RealNode(BaseNode):
             if "name" in c:
                 self._check(await cmds.set_name(c["name"]), "set_name")
                 done.append("name")
-            if "lat" in c and "lon" in c:
+            if ("lat" in c) != ("lon" in c):
+                raise NodeError("Breiten- und Längengrad müssen zusammen geschrieben werden")
+            if "lat" in c:
                 self._check(await cmds.set_coords(c["lat"], c["lon"]), "set_coords")
                 done += ["lat", "lon"]
             if any(k in c for k in ("radio_freq", "radio_bw", "radio_sf", "radio_cr")):
@@ -523,7 +568,8 @@ class RealNode(BaseNode):
         self._require()
         contact = await self._contact_dict(public_key)
         async with self._rep_lock:
-            ev = await self.mc.commands.send_login_sync(contact, password, timeout=0, min_timeout=STATUS_MIN_TIMEOUT_S)
+            with _quiet_library_log():
+                ev = await self.mc.commands.send_login_sync(contact, password, timeout=0, min_timeout=STATUS_MIN_TIMEOUT_S)
         if ev is None:
             raise NodeError("Keine Anmeldebestätigung: Passwort falsch oder der Repeater ist nicht erreichbar.")
         return {"ok": True, "admin": bool((ev.payload or {}).get("is_admin")),
@@ -538,20 +584,22 @@ class RealNode(BaseNode):
             raise NodeError(f"Abmelden: {jsonable(res.payload)}")
 
     @_locked
-    async def repeater_command(self, public_key: str, command: str, wait: bool = True) -> dict:
+    async def repeater_command(self, public_key: str, command: str, wait: bool = True, secret: bool = False) -> dict:
         self._require()
         contact = await self._contact_dict(public_key)
         prefix, replies = public_key[:12], []
+        # geheim: auch die Antwort (kann das Passwort enthalten) nicht als Rohdaten protokollieren lassen
         async with self._rep_lock:
-            sent = self._check(await self.mc.commands.send_cmd(contact, command), "send_cmd")
-            if not wait:
-                return {"replies": []}
-            timeout = max((sent or {}).get("suggested_timeout", 0) / 800, STATUS_MIN_TIMEOUT_S)
-            filters = {"pubkey_prefix": prefix, "txt_type": 1}
-            ev = await self.mc.wait_for_event(self._EventType.CONTACT_MSG_RECV, attribute_filters=filters, timeout=timeout)
-            while ev is not None and len(replies) < 4:           # lange Antworten kommen in mehreren Teilen
-                replies.append((ev.payload or {}).get("text", ""))
-                ev = await self.mc.wait_for_event(self._EventType.CONTACT_MSG_RECV, attribute_filters=filters, timeout=2.0)
+            with _quiet_library_log() if secret else contextlib.nullcontext():
+                sent = self._check(await self.mc.commands.send_cmd(contact, command), "send_cmd")
+                if not wait:
+                    return {"replies": []}
+                timeout = max((sent or {}).get("suggested_timeout", 0) / 800, STATUS_MIN_TIMEOUT_S)
+                filters = {"pubkey_prefix": prefix, "txt_type": 1}
+                ev = await self.mc.wait_for_event(self._EventType.CONTACT_MSG_RECV, attribute_filters=filters, timeout=timeout)
+                while ev is not None and len(replies) < 4:           # lange Antworten kommen in mehreren Teilen
+                    replies.append((ev.payload or {}).get("text", ""))
+                    ev = await self.mc.wait_for_event(self._EventType.CONTACT_MSG_RECV, attribute_filters=filters, timeout=2.0)
         return {"replies": replies}
 
     @_locked
@@ -583,8 +631,12 @@ class RealNode(BaseNode):
         geprüft (send_trace / TRACE_DATA), noch nicht an echter Hardware.
         """
         tag = random.randint(1, 0xFFFFFFFF)
-        sent = self._check(
-            await self.mc.commands.send_trace(auth_code=0, tag=tag, path=public_key[:2]), "send_trace")
+        try:
+            sent = self._check(
+                await self.mc.commands.send_trace(auth_code=0, tag=tag, path=public_key[:2]), "send_trace")
+        except NodeError as e:
+            log.info("Trace-Ping nicht gesendet: %s", e)
+            return {"ok": False, "rtt_ms": None}          # wie im Simulator
         timeout = max(sent.get("suggested_timeout", 0) / 800, TRACE_MIN_TIMEOUT_S)
         got = await self.mc.wait_for_event(
             self._EventType.TRACE_DATA, attribute_filters={"tag": tag}, timeout=timeout)
@@ -609,7 +661,11 @@ class RealNode(BaseNode):
                 return {"ok": False, "rtt_ms": None}
             return {"ok": True, "rtt_ms": round((time.monotonic() - t0) * 1000, 1)}
 
-        sent = self._check(await self.mc.commands.send_msg(public_key, text), "send_msg")
+        try:
+            sent = self._check(await self.mc.commands.send_msg(public_key, text), "send_msg")
+        except NodeError as e:
+            log.info("Ping nicht gesendet: %s", e)
+            return {"ok": False, "rtt_ms": None}          # wie im Simulator
         ack = sent["expected_ack"].hex()
         timeout = max(sent.get("suggested_timeout", 0) / 800, STATUS_MIN_TIMEOUT_S)
         got = await self.mc.wait_for_event(

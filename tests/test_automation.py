@@ -507,3 +507,67 @@ def test_name_brackets_are_stripped_and_empty_name_falls_back():
     assert Automation._reply_text("hi {name}", "Al[i]ce", None) == "@[Alice] hi @[Alice]"
     assert Automation._reply_text("pong", "", None) == "@[?] pong"
     assert Automation._reply_text("{name} pong", "Bob", None) == "@[Bob] pong"
+
+
+# ---------------------------------------------------------------- Korrekturen (Budget mehrfach, Länge, Treffer, Aufräumen)
+async def test_budget_acquire_several_slots_all_or_nothing():
+    """Bestätigte Nachrichten senden bis zu 3 Mal: so viele Plätze werden auf einmal verbucht, sonst keiner."""
+    clock = FakeClock()
+
+    async def fake_sleep(s):
+        clock.advance(s)
+
+    b = SendBudget(min_gap_s=0, max_per_hour=5, clock=clock, sleep=fake_sleep)
+    assert await b.acquire(3) is True and b.stats()["used_last_hour"] == 3
+    assert await b.acquire(3) is False and b.stats()["used_last_hour"] == 3     # nur noch 2 frei: nichts verbucht
+    assert await b.acquire(2) is True and await b.acquire() is False
+
+
+def test_reply_text_is_cut_to_byte_limit_and_keeps_the_mention():
+    from app.automation import REPLY_MAX_BYTES
+    long_name = "Ä" * 30
+    for template in ("x" * 150, "ü" * 150, "{name} " + "y" * 150, "{path} " * 40, "😀" * 60):
+        out = Automation._reply_text(template, long_name, 3, "a1,b2,c3" * 10)
+        assert len(out.encode()) <= REPLY_MAX_BYTES, (template, out)
+        assert MENTION_RE.match(out), out                                       # Schleifenschutz bleibt erhalten
+        out.encode("utf-8").decode("utf-8")
+    assert REPLY_MAX_BYTES <= 139                                               # passt in Direkt- UND Kanalnachricht
+    huge = Automation._reply_text("pong", "N" * 200, None)
+    assert MENTION_RE.match(huge) and len(huge.encode()) <= REPLY_MAX_BYTES and huge.endswith("pong")
+
+
+def test_contains_mode_matches_triggers_with_punctuation():
+    hit = Automation._hit
+    for needle, text in (("!ping", "!ping"), ("!ping", "hallo !ping bitte"), ("ping?", "ping?"), ("ping?", "na, ping? ok")):
+        assert hit({"mode": "contains", "match": needle}, text), (needle, text)
+    assert not hit({"mode": "contains", "match": "ping"}, "pinguin")
+    assert not hit({"mode": "contains", "match": "!ping"}, "!pinguin")
+    assert not hit({"mode": "contains", "match": "ping?"}, "xping?")
+
+
+async def test_prune_runs_from_the_start_and_also_while_paused(rt):
+    calls = []
+
+    async def prune(days):
+        calls.append(days)
+        return 0
+    rt.store.prune = prune
+    a = Automation(rt.node, rt.store, rt.hub.emit, rt.automation.budget, clock=FakeClock())
+    a.paused = True
+    await a.tick()
+    assert calls == [90]                                       # nicht erst nach 24 h Laufzeit, und auch bei Pause
+    await a.tick()
+    assert calls == [90]                                       # danach erst wieder nach 24 h
+
+
+async def test_prune_failure_does_not_stop_rules(rt):
+    async def boom(days):
+        raise RuntimeError("db")
+    rt.store.prune = boom
+    clock = FakeClock()
+    a = Automation(rt.node, rt.store, rt.hub.emit, rt.automation.budget, clock=clock)
+    await rt.store.add_rule("ping", "P", {"targets": [REPEATER_OK], "mode": "status", "text": "ping", "interval_min": 5})
+    await a.tick()                                             # wirft nicht
+    clock.advance(60)
+    await a.tick()
+    assert len(await rt.store.ping_history(REPEATER_OK, 0)) == 1      # Regel lief trotz kaputtem Aufräumen

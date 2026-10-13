@@ -118,6 +118,12 @@ button.chat-menu-item:hover, label.chat-menu-item:hover { background: var(--bg);
   .chanchat { display: none; }
   .chanwrap.chat-open .chanlist { display: none; }
   .chanwrap.chat-open .chanchat { display: block; }
+  /* Offener Chat am Handy: die Seite scrollt (nicht ein innerer Bereich), Kopf und Eingabe bleiben stehen */
+  .chanwrap.chat-open .chat.big { height: auto; max-height: none; overflow: visible; }
+  .chanwrap.chat-open .chat-head { position: sticky; top: 0; z-index: 3; background: var(--card); padding: 6px 0; margin-top: -6px; }
+  .chanwrap.chat-open .chat-compose { position: sticky; bottom: 0; z-index: 2; background: var(--card);
+    padding: 8px 0 calc(4px + env(safe-area-inset-bottom)); }
+  .chanwrap.chat-open .unread-sep { scroll-margin-top: 64px; }
   #chatBack:not([hidden]) { display: inline-flex; }
 }
 .bubble .detail { font-size: 11px; opacity: .85; margin-top: 3px; border-top: 1px solid currentColor;

@@ -286,6 +286,13 @@ class Storage:
                 out[idx] = out.get(idx, 0) + 1
         return out
 
+    def channel_first_unread(self, idx: int) -> int | None:
+        """ID der ältesten ungelesenen eingehenden Nachricht eines Kanalplatzes (None = keine)."""
+        base, marks = self._read_markers()
+        rows = self._all("SELECT MIN(id) AS m FROM messages WHERE kind='channel' AND direction='in' AND peer=? AND id>?",
+                         (str(idx), marks.get(idx, base)))
+        return rows[0]["m"] if rows and rows[0]["m"] is not None else None
+
     def mark_channel_read(self, idx: int) -> None:
         rows = self._all("SELECT MAX(id) AS m FROM messages WHERE kind='channel' AND peer=?", (str(idx),))
         self.set_setting(f"channel_read_{idx}", int(rows[0]["m"] or 0))
@@ -525,16 +532,15 @@ class Storage:
             return cur.rowcount > 0
 
     def room_member(self, key: str, name: str | None = None) -> dict:
-        """Mitglied holen; legt es beim ersten Mal an (ab dann zählen nur noch neue Beiträge als ungelesen)."""
-        rows = self._all("SELECT * FROM room_members WHERE public_key=?", (key,))
-        if rows:
-            if name and rows[0]["name"] != name:
-                self._exec("UPDATE room_members SET name=? WHERE public_key=?", (name[:40], key))
-                rows[0]["name"] = name[:40]
-            return rows[0]
-        self._exec("INSERT INTO room_members(public_key, name, last_seen_id, subscribed, first_seen) VALUES(?,?,?,0,?)",
+        """Mitglied holen; legt es beim ersten Mal an (ab dann zählen nur noch neue Beiträge als ungelesen).
+        Erst „INSERT OR IGNORE“, dann lesen: zwei gleichzeitige erste Nachrichten (zwei Threads) führen so nie zu einem IntegrityError."""
+        self._exec("INSERT OR IGNORE INTO room_members(public_key, name, last_seen_id, subscribed, first_seen) VALUES(?,?,?,0,?)",
                    (key, (name or key[:8])[:40], 0, time.time()))
-        return self._all("SELECT * FROM room_members WHERE public_key=?", (key,))[0]
+        rows = self._all("SELECT * FROM room_members WHERE public_key=?", (key,))
+        if name and rows[0]["name"] != name[:40]:
+            self._exec("UPDATE room_members SET name=? WHERE public_key=?", (name[:40], key))
+            rows[0]["name"] = name[:40]
+        return rows[0]
 
     def room_members(self) -> list[dict]:
         return self._all("SELECT * FROM room_members ORDER BY first_seen")

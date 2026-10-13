@@ -51,6 +51,11 @@ def _check_shape(data: Any) -> None:
         raise BackupError("Das ist keine Sicherungsdatei dieses Programms.")
     if data.get("version") != VERSION:
         raise BackupError(f"Unbekannte Version {data.get('version')}.")
+    if data.get("node") is not None and not isinstance(data["node"], dict):
+        raise BackupError("„node“ muss ein Objekt sein.")
+    for key in ("rules", "channels"):
+        if data.get(key) is not None and not isinstance(data[key], list):
+            raise BackupError(f"„{key}“ muss eine Liste sein.")
     if len(data.get("rules") or []) > MAX_RULES or len(data.get("channels") or []) > MAX_CHANNELS:
         raise BackupError("Zu viele Einträge in der Datei.")
 
@@ -77,12 +82,17 @@ async def plan(rt, data: Any, sections: list[str]) -> dict:
         res["risks"] = validate(changes, cur.get("max_tx_power"))[1] if changes else []
     if "channels" in sections:
         have = {c["idx"]: c for c in await rt.node.channels()}
+        top = await rt.node.max_channels()                 # Plätze des angeschlossenen Nodes, nicht pauschal 0–39
+        seen: set[int] = set()
         for ch in data.get("channels") or []:
             try:
                 idx, name = int(ch["idx"]), str(ch["name"])
                 secret = bytes.fromhex(ch["secret"]) if ch.get("secret") else None
-                if not 0 <= idx <= 39:
-                    raise ValueError("Platz außerhalb 0–39")
+                if not 0 <= idx < top:
+                    raise ValueError(f"Platz {idx} gibt es auf diesem Node nicht (0–{top - 1})")
+                if idx in seen:
+                    raise ValueError(f"Platz {idx} kommt doppelt vor")
+                seen.add(idx)
                 if secret is None and not name.startswith("#"):
                     res["channels"].append({"idx": idx, "name": name, "action": "skip", "why": "Schlüssel fehlt in der Datei"})
                     continue
@@ -114,27 +124,38 @@ async def plan(rt, data: Any, sections: list[str]) -> dict:
 
 
 async def restore(rt, data: Any, sections: list[str], confirm: bool = False, overwrite_channels: bool = False) -> dict:
+    """Erst alles prüfen (plan), dann schreiben. Reihenfolge: Kanäle (können am Node noch scheitern), Regeln, zuletzt die
+    Node-Einstellungen: scheitert ein Kanal, bleiben Funkwerte & Co. unverändert. Bei einem Fehler nennt die Meldung,
+    was schon geschrieben wurde."""
     p = await plan(rt, data, sections)
     if p["risks"] and not confirm:
         raise NeedsConfirm("Bestätigung nötig: " + " ".join(p["risks"]))
     report: list[str] = []
-    if p["node"]:
-        await rt.nodecfg.apply(p["node"], confirm=True)
-        report.append("Node-Einstellungen: " + ", ".join(p["node"]))
-    for ch in p["channels"]:
-        label = f"Kanal {ch['idx']} „{ch['name']}“"
-        if ch["action"] == "skip" or ch["action"] == "same":
-            continue
-        if ch["action"] == "conflict" and not overwrite_channels:
-            report.append(f"{label}: übersprungen ({ch['why']})")
-            continue
-        await rt.node.set_channel(ch["idx"], ch["name"], bytes.fromhex(ch["_secret"]))
-        await rt.store.delete_channel_messages(ch["idx"])
-        report.append(f"{label}: geschrieben")
-    for r in p["rules"]:
-        if r["action"] == "add":
-            await rt.store.add_rule(r["kind"], r["name"], r["config"], r["enabled"])
-            report.append(f"Regel „{r['name']}“ angelegt")
+    try:
+        for ch in p["channels"]:
+            label = f"Kanal {ch['idx']} „{ch['name']}“"
+            if ch["action"] == "skip" or ch["action"] == "same":
+                continue
+            if ch["action"] == "conflict" and not overwrite_channels:
+                report.append(f"{label}: übersprungen ({ch['why']})")
+                continue
+            await rt.node.set_channel(ch["idx"], ch["name"], bytes.fromhex(ch["_secret"]))
+            # wie beim Löschen/Neuschlüsseln über die API: alter Verlauf, Anzeige- und Gelesen-Marker gehören nicht dazu
+            await rt.store.delete_channel_messages(ch["idx"])
+            await rt.store.delete_setting(f"channel_view_{ch['idx']}")
+            await rt.store.delete_setting(f"channel_read_{ch['idx']}")
+            report.append(f"{label}: geschrieben")
+        for r in p["rules"]:
+            if r["action"] == "add":
+                await rt.store.add_rule(r["kind"], r["name"], r["config"], r["enabled"])
+                report.append(f"Regel „{r['name']}“ angelegt")
+        if p["node"]:
+            await rt.nodecfg.apply(p["node"], confirm=True)
+            report.append("Node-Einstellungen: " + ", ".join(p["node"]))
+    except NodeError as e:
+        if not report:
+            raise
+        raise type(e)(f"{e} (schon erledigt: {'; '.join(report)})") from e
     return {"report": report or ["Nichts zu tun: alles ist schon so."]}
 
 

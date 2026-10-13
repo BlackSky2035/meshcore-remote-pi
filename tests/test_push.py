@@ -376,3 +376,44 @@ async def test_old_list_format_in_database_still_works(rt, client):
     rt.raw_store._exec("UPDATE push_subs SET channels='[0, 2]'")
     p = (await client.get("/api/push/prefs", params={"endpoint": ENDPOINT})).json()
     assert p["modes"] == {"0": "every", "2": "every"}
+
+
+# ---------------------------------------------------------------- Korrekturen: Schlüssel nur einmal, „einmal“ ohne Wettlauf
+async def test_concurrent_first_vapid_calls_create_only_one_key(rt, monkeypatch):
+    made = []
+    real = webpush.generate_vapid
+
+    def gen():
+        made.append(1)
+        return real()
+    monkeypatch.setattr(webpush, "generate_vapid", gen)
+    keys = await asyncio.gather(*(rt.push.vapid() for _ in range(5)))
+    assert len(made) == 1 and len({k["public_key"] for k in keys}) == 1
+    assert (await rt.store.get_setting("push_vapid"))["public_key"] == keys[0]["public_key"]
+
+
+async def test_once_mode_two_simultaneous_messages_notify_exactly_once(rt, client, sent):
+    """Zwei fast gleichzeitige Nachrichten: beide sahen früher „2 ungelesen“ und keine wurde gemeldet."""
+    await subscribe(client, channels=[0])
+    await put_modes(client, {"0": "once"})
+    await client.get("/api/channels/unread")                       # Grundlinie
+    a = await rt.store.add_message("in", "channel", "0", "eins", name="Alice (Sim)")
+    b = await rt.store.add_message("in", "channel", "0", "zwei", name="Bob (Sim)")
+    rt.push.notify_channel(0, "Bob (Sim)", "zwei", b)              # Reihenfolge der Aufgaben egal
+    rt.push.notify_channel(0, "Alice (Sim)", "eins", a)
+    await rt.push.drain()
+    assert [p["body"] for _, p in sent] == ["Alice (Sim): eins"]
+
+
+async def test_once_mode_through_the_event_path_without_waiting_in_between(rt, client, sent):
+    await subscribe(client, channels=[0])
+    await put_modes(client, {"0": "once"})
+    await client.get("/api/channels/unread")
+    for i in range(3):
+        await rt.node.inject_channel_message(0, "Alice (Sim)", f"m{i}")
+    await rt.hub.drain(); await rt.push.drain()
+    assert len(sent) == 1
+    await client.post("/api/channels/0/read")
+    await rt.node.inject_channel_message(0, "Alice (Sim)", "neu")
+    await rt.hub.drain(); await rt.push.drain()
+    assert len(sent) == 2

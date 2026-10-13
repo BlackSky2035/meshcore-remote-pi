@@ -152,3 +152,24 @@ async def test_real_node_reboot_never_raises():
     n = real_node()
     await n.node_reboot()
     assert ("reboot", ()) in n.mc.calls
+
+
+# ---- Nur Breiten- ODER nur Längengrad geändert --------------------------------------------------
+async def test_changing_only_latitude_writes_both_coordinates_to_real_node():
+    n = real_node()
+    cfg = N.NodeConfig(n)
+    await cfg.apply({"lat": 5.0, "lon": 2.0})                           # Längengrad unverändert
+    assert ("set_coords", (5.0, 2.0)) in n.mc.calls
+
+
+async def test_real_node_rejects_a_single_coordinate():
+    n = real_node()
+    with pytest.raises(NodeError, match="zusammen"):
+        await n.node_apply({"lat": 5.0})
+    assert not any(c[0] == "set_coords" for c in n.mc.calls)
+
+
+@pytest.mark.parametrize("raw", ["abc", None, [1], {"a": 1}])
+def test_non_numeric_choice_is_a_config_error(raw):
+    with pytest.raises(N.ConfigError):
+        N.validate({"radio_bw": raw})

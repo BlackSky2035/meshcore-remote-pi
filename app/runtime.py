@@ -135,7 +135,7 @@ def build(settings: Settings,
     automation = Automation(node, store, hub.emit, budget, retention_days=settings.retention_days)
     push = PushService(store, node)
 
-    room = Room(node, store, budget, automation.log, hub.emit)
+    room = Room(node, store, budget, automation.log, hub.emit, paused=lambda: automation.paused)     # globaler Pausenschalter gilt auch für den Raum
 
     async def peer_notify(kind: str, text: str) -> None:
         await automation.log("warn" if kind == "down" else "info", text)
@@ -180,7 +180,7 @@ def build(settings: Settings,
         elif kind == "channel_message":
             sender, text = split_sender(payload.get("text", ""))
             plen, mode = payload.get("path_len"), payload.get("path_hash_mode")
-            await store.add_message(
+            msg_id = await store.add_message(
                 "in", "channel", str(payload.get("channel_idx", 0)), text, name=sender,
                 sender_ts=payload.get("sender_timestamp"), path=payload.get("path"),
                 path_hash_size=mode + 1 if isinstance(mode, int) and mode >= 0 else 1,
@@ -193,7 +193,7 @@ def build(settings: Settings,
             except Exception:
                 log.exception("Stichwort-Prüfung fehlgeschlagen")
             try:
-                push.notify_channel(payload.get("channel_idx", 0), sender, text)
+                push.notify_channel(payload.get("channel_idx", 0), sender, text, msg_id)
             except Exception:
                 log.exception("Push konnte nicht vorgemerkt werden")
             await automation.handle_channel_incoming(payload, sender, text)

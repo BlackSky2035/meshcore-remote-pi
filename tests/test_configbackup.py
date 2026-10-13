@@ -96,3 +96,57 @@ async def test_not_connected_is_502(client, rt):
     await rt.node.disconnect()
     assert (await client.get("/api/backup/export")).status_code == 502
     assert (await client.post("/api/backup/restore", json={"data": d})).status_code == 502
+
+
+# ---- Form der Datei, Kanalplätze, Reihenfolge und Aufräumen ------------------------------------------
+@pytest.mark.parametrize("mut", [
+    lambda d: d.update(node=[1, 2]), lambda d: d.update(node="x"), lambda d: d.update(rules={"a": 1}),
+    lambda d: d.update(rules=5), lambda d: d.update(channels="abc"), lambda d: d.update(channels=7),
+    lambda d: d["node"].update(radio_bw="breit"), lambda d: d["node"].update(radio_bw=None),
+    lambda d: d["node"].update(radio_bw=[250]), lambda d: d["node"].update(radio_freq={"x": 1}),
+])
+async def test_wrong_types_are_422_not_500(client, rt, mut):
+    d = (await client.get("/api/backup/export?channel_keys=true")).json()
+    mut(d)
+    r = await client.post("/api/backup/restore", json={"data": d, "dry_run": True})
+    assert r.status_code == 422, r.text
+
+
+async def test_channel_slot_checked_against_node_limit(client, rt):
+    rt.node.max_ch = 8
+    d = (await client.get("/api/backup/export?channel_keys=true")).json()
+    d["channels"].append({"idx": 8, "name": "x", "secret": "ab" * 16})            # Node hat nur 0–7
+    r = await client.post("/api/backup/restore", json={"data": d, "sections": ["channels"], "dry_run": True})
+    assert r.status_code == 422 and "8" in r.json()["detail"]
+
+
+async def test_duplicate_channel_slot_is_rejected(client, rt):
+    d = (await client.get("/api/backup/export?channel_keys=true")).json()
+    d["channels"] = [{"idx": 5, "name": "a", "secret": "ab" * 16}, {"idx": 5, "name": "b", "secret": "cd" * 16}]
+    r = await client.post("/api/backup/restore", json={"data": d, "sections": ["channels"], "dry_run": True})
+    assert r.status_code == 422 and "doppelt" in r.json()["detail"]
+
+
+async def test_channel_failure_leaves_node_settings_untouched(client, rt):
+    d = (await client.get("/api/backup/export?channel_keys=true")).json()
+    d["node"]["multi_acks"] = 1
+    d["channels"].append({"idx": 6, "name": "Neu", "secret": "ab" * 16})
+
+    async def broken(*a, **k):
+        from app.node import NodeError
+        raise NodeError("Kanal 6: Schreiben nicht bestätigt")
+    rt.node.set_channel = broken
+    r = await client.post("/api/backup/restore", json={"data": d, "sections": ["node", "channels"]})
+    assert r.status_code == 502
+    assert rt.node.cfg["multi_acks"] == 0                                          # Node-Einstellungen erst ganz zum Schluss
+
+
+async def test_restore_clears_view_and_read_markers_of_written_slot(client, rt):
+    await rt.store.set_setting("channel_view_6", {"paths": True})
+    await rt.store.set_setting("channel_read_6", 17)
+    d = (await client.get("/api/backup/export?channel_keys=true")).json()
+    d["channels"].append({"idx": 6, "name": "Neu", "secret": "ab" * 16})
+    r = await client.post("/api/backup/restore", json={"data": d, "sections": ["channels"]})
+    assert r.status_code == 200, r.text
+    assert await rt.store.get_setting("channel_view_6", None) is None
+    assert await rt.store.get_setting("channel_read_6", None) is None

@@ -91,13 +91,15 @@ export async function mount(root, ctx) {
   }
 
   // ---- Verbindungslinien (optional, aus der Netz-Seite) -----------------------------------------
-  let linksLayer = null;
+  // Ladezähler: schnelles An/Aus vor der Antwort darf keine (verwaiste) Ebene hinterlassen.
+  let linksLayer = null, linksSeq = 0;
   async function renderLinks() {
+    const my = ++linksSeq;
     if (linksLayer) { map.removeLayer(linksLayer); linksLayer = null; }
     if (!$('showLinks').checked) return;
     let g;
-    try { g = await get('/api/network'); } catch (e) { if (alive) $('hint').textContent = e.message; return; }
-    if (!alive) return;
+    try { g = await get('/api/network'); } catch (e) { if (alive && my === linksSeq) $('hint').textContent = e.message; return; }
+    if (!alive || my !== linksSeq || !$('showLinks').checked) return;     // inzwischen abgeschaltet oder neuer Aufruf
     const posById = {};
     for (const n of withPos) posById[n.public_key] = [n.lat, n.lon];
     if (me && me.adv_lat && me.adv_lon) posById.me = [me.adv_lat, me.adv_lon];
@@ -108,6 +110,7 @@ export async function mount(root, ctx) {
       const s = LINK_STYLE[e.kind] || LINK_STYLE.path;
       L.polyline([a, b], {color: s.color || snrColor(e.snr), weight: s.weight, dashArray: s.dashArray, opacity: s.opacity}).addTo(group);
     }
+    if (linksLayer) map.removeLayer(linksLayer);
     linksLayer = group.addTo(map);
   }
   $('showLinks').onchange = renderLinks;

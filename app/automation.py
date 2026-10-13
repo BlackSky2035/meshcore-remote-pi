@@ -40,6 +40,21 @@ def mention_tag(name: str) -> str:
     Leer, wenn nichts übrig bleibt."""
     n = " ".join(str(name or "").replace("[", "").replace("]", "").split())
     return f"@[{n}]" if n else ""
+
+
+def cut_bytes(text: str, limit: int, mark: str = "...") -> str:
+    """Kürzt `text` auf höchstens `limit` Byte (UTF-8), ohne ein Zeichen zu zerreißen, und hängt `mark` an. Kürzer bleibt unverändert."""
+    if len(text.encode("utf-8")) <= limit:
+        return text
+    cut = text.encode("utf-8")[: max(0, limit - len(mark.encode("utf-8")))].decode("utf-8", "ignore")
+    return cut.rstrip() + mark
+
+
+# Höchstlänge einer Auto-Antwort in BYTES (UTF-8). Gilt für Direkt- UND Kanalnachrichten: Direktnachrichten dürfen 150 Byte haben (room.LINE_MAX,
+# Zähler der MeshCore-App), bei Kanälen setzt der Node noch „Name: “ davor; die Oberfläche begrenzt Chat-Eingaben deshalb auf 139 Zeichen.
+# 139 Byte sind nie mehr als 139 Zeichen, passen also in beide Fälle.
+REPLY_MAX_BYTES = 139
+MENTION_MAX_BYTES = 48       # Name in der Erwähnung vorn höchstens so lang, damit für den Text Platz bleibt
 TICK_S = 5.0
 STARTUP_DELAY_S = 20.0
 STAGGER_S = 10.0
@@ -65,18 +80,22 @@ class SendBudget:
         while self._sent and now - self._sent[0] > 3600:
             self._sent.popleft()
 
-    async def acquire(self) -> bool:
-        """True = darf senden (Zeitpunkt wird verbucht), False = Stundenlimit erreicht."""
+    async def acquire(self, n: int = 1) -> bool:
+        """True = darf senden (Zeitpunkt wird verbucht), False = Stundenlimit erreicht.
+
+        `n` Plätze auf einmal, alle oder keiner: z. B. eine bestätigte Nachricht, die der Node bis zu n Mal sendet."""
+        n = max(1, int(n))
         async with self._lock:
             now = self._clock()
             self._trim(now)
-            if len(self._sent) >= self.max_per_hour:
+            if len(self._sent) + n > self.max_per_hour:
                 return False
             if self._sent:
                 wait = self.min_gap_s - (now - self._sent[-1])
                 if wait > 0:
                     await self._sleep(wait)
-            self._sent.append(self._clock())
+            t = self._clock()
+            self._sent.extend([t] * n)
             return True
 
     def stats(self) -> dict:
@@ -104,7 +123,7 @@ class Automation:
         self._no_temp: dict[str, float] = {}           # Repeater ohne Temperatursensor: bis wann nicht fragen
         self._alerted: set[str] = set()
         self._contacts_cache: tuple[float, list[dict]] | None = None
-        self._last_prune = 0.0
+        self._last_prune = float("-inf")             # gleich beim ersten Durchlauf aufräumen (monotonic beginnt nicht bei 0)
         self._task: asyncio.Task | None = None
 
     # ---- Lebenszyklus ----------------------------------------------------
@@ -160,11 +179,12 @@ class Automation:
     # ---- Eingehende Nachrichten: Auto-Antwort ----------------------------
     @staticmethod
     def _hit(cfg: dict, text: str) -> bool:
-        """„enthält“ matcht nur als ganzes Wort (Wortgrenzen) – „ping“ soll nicht in „pinguin“ feuern."""
+        """„enthält“ matcht nur als ganzes Wort – „ping“ soll nicht in „pinguin“ feuern. Statt \\b wird geprüft, dass davor/dahinter
+        kein Wortzeichen steht: \\b verlangt ein Wortzeichen am Rand und fand deshalb Auslöser wie „!ping“ oder „ping?“ nie."""
         haystack, needle = text.lower(), cfg["match"].strip().lower()
         if cfg["mode"] == "equals":
             return haystack == needle
-        return bool(re.search(rf"\b{re.escape(needle)}\b", haystack))
+        return bool(re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack))
 
     def _reserve(self, rule: dict, sender_key: str) -> str | None:
         """Prüft Abkühlzeit je Absender und Stundenobergrenze der Regel und verbucht beides sofort.
@@ -218,11 +238,20 @@ class Automation:
     @classmethod
     def _reply_text(cls, template: str, name: str, hops: int | None, path: str = "?") -> str:
         """Antworttext mit Erwähnung vorn. Beginnt der Text nach dem Füllen schon mit einer Erwähnung (z. B. "{name} pong"), kommt keine zweite davor.
-        Die Erwähnung am Anfang ist zugleich der Schleifenschutz (siehe MENTION_RE) und darf nie fehlen."""
+        Die Erwähnung am Anfang ist zugleich der Schleifenschutz (siehe MENTION_RE) und darf nie fehlen: gekürzt (auf REPLY_MAX_BYTES Byte) wird
+        nur der Text dahinter, ein überlanger Name in der Erwähnung nur innerhalb der Klammern."""
         text = cls._fill(template, name, hops, path)
         if not MENTION_RE.match(text):
             text = f"{mention_tag(name) or '@[?]'} {text}"
-        return text[:200]
+        m = MENTION_RE.match(text)
+        head, body = text[:m.end()], text[m.end():]
+        if len(head.encode("utf-8")) > MENTION_MAX_BYTES:
+            inner = head.strip()[2:-1]
+            head = f"@[{cut_bytes(inner, MENTION_MAX_BYTES - 4, '').strip() or '?'}] "
+        if not head.endswith(" ") and body:
+            head += " "
+        room = REPLY_MAX_BYTES - len(head.encode("utf-8"))
+        return (head + cut_bytes(body, room)).rstrip()
 
     async def handle_incoming(self, payload: dict, contact: dict | None) -> None:
         """Prüft Auto-Antwort-Regeln für Direktnachrichten. Wird NICHT aus dem Node-Callback
@@ -458,6 +487,14 @@ class Automation:
     async def tick(self) -> None:
         """Ein Durchlauf des Zeitplans (auch direkt aus Tests aufrufbar)."""
         now = self._clock()
+        if now - self._last_prune > 86400:     # vor der Pause-Prüfung: Aufräumen betrifft nur die Datenbank, nicht den Funk
+            self._last_prune = now
+            try:
+                removed = await self.store.prune(self.retention_days)
+                if removed:
+                    log.info("%d alte Einträge gelöscht", removed)
+            except Exception:
+                log.exception("Aufräumen alter Einträge fehlgeschlagen")
         if self.paused or not self.node.connected:
             return
         rules = [r for r in await self.store.rules()
@@ -478,11 +515,6 @@ class Automation:
                 except Exception as e:         # Automatik darf nie den Server beenden
                     log.exception("Regel %s fehlgeschlagen", rule["id"])
                     await self.log("error", f"Regel '{rule['name']}' Fehler: {e}", rule["id"])
-        if now - self._last_prune > 86400:
-            self._last_prune = now
-            removed = await self.store.prune(self.retention_days)
-            if removed:
-                log.info("%d alte Einträge gelöscht", removed)
 
     async def _loop(self) -> None:
         while True:

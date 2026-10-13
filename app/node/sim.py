@@ -295,6 +295,8 @@ class SimNode(BaseNode):
         unknown = set(changes) - set(self.cfg)
         if unknown:
             raise NodeError(f"Unbekannte Einstellung: {', '.join(sorted(unknown))}")
+        if ("lat" in changes) != ("lon" in changes):                # wie der echte Node: Koordinaten nur zusammen
+            raise NodeError("Breiten- und Längengrad müssen zusammen geschrieben werden")
         self.cfg.update(changes)
         return list(changes)
 
@@ -343,7 +345,7 @@ class SimNode(BaseNode):
         self._rep_target(public_key)
         self.rep_logged.discard(public_key)
 
-    async def repeater_command(self, public_key: str, command: str, wait: bool = True) -> dict:
+    async def repeater_command(self, public_key: str, command: str, wait: bool = True, secret: bool = False) -> dict:
         self._rep_target(public_key)
         await asyncio.sleep(0)
         self.rep_cmds.append((public_key, command))

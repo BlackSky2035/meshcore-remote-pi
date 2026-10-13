@@ -217,8 +217,9 @@ class BaseNode(ABC):
     async def repeater_logout(self, public_key: str) -> None:
         raise NodeError("Repeater-Verwaltung wird von diesem Node-Typ nicht unterstützt")
 
-    async def repeater_command(self, public_key: str, command: str, wait: bool = True) -> dict:
-        """Textbefehl (CLI) an den angemeldeten Repeater. Ergebnis {"replies": [str, ...]}; leer, wenn nichts kam."""
+    async def repeater_command(self, public_key: str, command: str, wait: bool = True, secret: bool = False) -> dict:
+        """Textbefehl (CLI) an den angemeldeten Repeater. Ergebnis {"replies": [str, ...]}; leer, wenn nichts kam.
+        `secret`: Befehl/Antwort enthalten ein Passwort (der echte Node schaltet dann das Rohdaten-Protokoll der Bibliothek ab)."""
         raise NodeError("Repeater-Verwaltung wird von diesem Node-Typ nicht unterstützt")
 
     async def repeater_neighbours(self, public_key: str) -> dict:

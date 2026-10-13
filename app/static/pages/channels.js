@@ -32,7 +32,7 @@ export async function mount(root, ctx) {
         </div>
       </section>
       <section class="card chanchat" id="chatCard">
-        <div class="row between" style="flex-wrap:nowrap">
+        <div class="row between chat-head" style="flex-wrap:nowrap">
           <div class="row" style="gap:8px;align-items:center;min-width:0">
             <button id="chatBack" class="small secondary" type="button" aria-label="Zurück zu den Kanälen" hidden>←</button>
             <h2 id="chatTitle" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Kein Kanal gewählt</h2>
@@ -55,11 +55,13 @@ export async function mount(root, ctx) {
           </div>
         </div>
         <div id="chat" class="chat big"><p class="muted">Links einen Kanal wählen oder einen neuen anlegen.</p></div>
+        <div class="chat-compose">
         <div class="row">
           <input id="chatText" type="text" maxlength="139" placeholder="Nachricht" disabled style="flex:1">
           <button id="chatSend" disabled>Senden</button>
         </div>
         <div id="chatCount" class="muted small" style="text-align:right"></div>
+        </div>
         <p class="muted small" style="margin:6px 0 0">Doppelklick auf eine Nachricht erwähnt den Absender (<code>@[Name]</code>); die Uhrzeit der Nachricht wird angehängt, wenn Platz ist.</p>
       </section>
     </div>
@@ -95,6 +97,12 @@ export async function mount(root, ctx) {
   const wrap = root.querySelector('.chanwrap');
   let channels = [], maxCh = 0, current = null, editing = null, lastMsgs = [], contacts = [];
   let alive = true;
+  let msgsFor = null;                        // Kanal, zu dem lastMsgs gehört
+  let lastUnread = 0;                         // Ungelesen-Zähler beim Öffnen: bleibt beim Neuzeichnen (Kontakte, Pfade) erhalten
+  let draftFor = null;                        // Kanal, zu dem Eingabefeld und Erwähnung gehören
+  let sending = false;                        // Senden läuft: Enter löst kein zweites Funkpaket aus
+  // Verwaister Verlaufseintrag (Seite über das Menü verlassen, während ein Chat offen war): ersetzen, sonst gibt es später einen „toten“ Zurück-Schritt.
+  if (window.history.state?.mcChat) { try { window.history.replaceState({}, ''); } catch { /* ohne Verlauf */ } }
 
   // ---- Optionen-Menü (⋮) ------------------------------------------------------
   function closeMenu() { $('chatMenu').hidden = true; $('chatMenuBtn').setAttribute('aria-expanded', 'false'); }
@@ -230,8 +238,16 @@ export async function mount(root, ctx) {
     return 0;          // mehr ungelesen gemeldet als geladen: ganz oben beginnen
   }
 
-  function renderMessages(msgs, unreadCount = 0) {
-    lastMsgs = msgs;
+  // keep: nur neu zeichnen (z. B. Kontakte nachgeladen), Scrollposition behalten statt zu springen.
+  // Der Bereich, der wirklich scrollt: der Chat selbst (PC) oder die Seite (#scrollArea, Handy).
+  function scroller(el) {
+    let page = false;
+    try { page = getComputedStyle(el).overflowY === 'visible'; } catch { /* ohne CSS (Test) */ }
+    return page ? (el.closest('#scrollArea') || document.scrollingElement || el) : el;
+  }
+
+  function renderMessages(msgs, unreadCount = 0, keep = false) {
+    lastMsgs = msgs; lastUnread = unreadCount;
     const details = !!currentChannel()?.show_details;
     const unreadAt = firstUnreadIndex(msgs, unreadCount);
     let lastDay = '';
@@ -249,17 +265,24 @@ export async function mount(root, ctx) {
         ${details ? detailsHtml(m) : ''}
         <div class="meta">${fmtTime(m.ts)}</div></div>`;
     }).join('');
-    const el = $('chat');
+    // Am Handy scrollt nicht der Chat selbst, sondern die ganze Seite (style.css): so wirkt ein Wisch überall,
+    // auch neben der Karte, und es gibt keine zwei verschachtelten Scrollbereiche mehr.
+    const el = $('chat'), sc = scroller(el), top = sc.scrollTop;
+    const atEnd = sc.scrollHeight - top - sc.clientHeight < 80;          // liest gerade ganz unten mit
     el.innerHTML = html || '<p class="muted">Noch keine Nachrichten in diesem Kanal.</p>';
+    // „follow“ (neue Nachricht kam rein): nur nach unten springen, wer schon unten war – wer ältere Nachrichten liest, bleibt dort
+    if (keep === true || (keep === 'follow' && !atEnd)) { sc.scrollTop = top; return; }
     const marker = unreadAt >= 0 ? el.querySelector('.unread-sep') : null;
-    if (marker) marker.scrollIntoView({block: 'start'}); else el.scrollTop = el.scrollHeight;
+    if (marker) marker.scrollIntoView({block: 'start'}); else sc.scrollTop = sc.scrollHeight;
   }
 
-  async function reloadMessages(unreadCount = 0) {
+  async function reloadMessages(unreadCount = 0, keep = false) {
     if (current === null) return;
-    const msgs = await get(`/api/channels/${current}/messages?limit=200`);
-    if (!alive) return;
-    renderMessages(msgs, unreadCount);
+    const idx = current;
+    const msgs = await get(`/api/channels/${idx}/messages?limit=200`);
+    if (!alive || current !== idx) return;             // inzwischen anderer Kanal offen: alte Antwort verwerfen
+    msgsFor = idx;
+    renderMessages(msgs, unreadCount, keep);
   }
 
   // Als gelesen markieren (Server merkt es sich: Glocke und „einmal“-Push werden damit zurückgesetzt)
@@ -274,23 +297,27 @@ export async function mount(root, ctx) {
     // Ein Verlaufseintrag für den offenen Chat: „Zurück“ des Browsers/iOS-Randwisch schließt dann den Chat statt die Seite zu wechseln.
     if (current === null && !window.history.state?.mcChat) { try { window.history.pushState({mcChat: 1}, ''); } catch { /* ohne Verlauf */ } }
     current = idx;
+    // Anderer Kanal: Entwurf und Erwähnung gehören zum vorigen Kanal, nicht mitnehmen.
+    if (draftFor !== idx) { $('chatText').value = ''; replyRef = null; updateChatCount(); }
+    draftFor = idx;
     wrap.classList.add('chat-open');
     $('chatBack').hidden = false;
     closeMenu();
     $('chatTitle').textContent = c.name;
     $('chatActions').hidden = false;
     $('detailToggle').checked = !!c.show_details;
-    $('chatText').disabled = $('chatSend').disabled = false;
+    $('chatText').disabled = false; $('chatSend').disabled = sending;
     $('pushChanRow').hidden = !ps.subscribed;
     $('pushMode').value = ps.modes[idx] || 'off';
     markRead(idx);
     renderList();
-    try { await reloadMessages(unreadAtOpen); if (alive) $('error').textContent = ''; }
-    catch (e) { if (alive) $('error').textContent = e.message; }
-    if (alive) $('chatText').focus();
+    try { await reloadMessages(unreadAtOpen); if (alive && current === idx) $('error').textContent = ''; }
+    catch (e) { if (alive && current === idx) $('error').textContent = e.message; }
+    if (alive && current === idx) $('chatText').focus();
   }
 
   function closeChat() {
+    try { const sa = document.getElementById('scrollArea'); if (sa && current !== null) sa.scrollTop = 0; } catch { /* egal */ }   // Liste wieder von oben
     if (window.history.state?.mcChat) { try { window.history.back(); } catch { /* ohne Verlauf */ } }     // Verlaufseintrag wieder entfernen
     current = null;
     wrap.classList.remove('chat-open');
@@ -305,7 +332,9 @@ export async function mount(root, ctx) {
 
   // Wie bei WhatsApp: Chat nach rechts wischen = der Chat folgt dem Finger und gleitet nach rechts weg, danach steht die Kanalliste da.
   // Reicht der Wisch (ein Drittel der Breite oder schnell), schließt er sich, sonst springt er zurück. Nur waagerechte Wischer
-  // nach rechts; senkrechtes Scrollen und Textmarkieren bleiben unberührt.
+  // nach rechts; senkrechtes Scrollen und Textmarkieren bleiben unberührt. Nur in der einspaltigen Handy-Ansicht (style.css: max-width 640px,
+  // dort ist der Chat allein sichtbar) und nicht im offenen Menü: sonst bedeutet Wischen nirgends etwas.
+  const singleColumn = () => !window.matchMedia || window.matchMedia('(max-width: 640px)').matches;
   let swipe = null;
   const cleanups = [];                                              // Aufräumen beim Verlassen der Seite (Wisch- und Verlaufs-Listener)
   const chatCard = $('chatCard');
@@ -314,8 +343,8 @@ export async function mount(root, ctx) {
   const onDoc = (type, fn) => { document.addEventListener(type, fn, {passive: true}); cleanups.push(() => document.removeEventListener(type, fn)); };
   onDoc('touchstart', e => {
     const t = e.touches && e.touches[0];
-    const own = e.target.closest?.('input, textarea, select, dialog');       // Textfelder und Dialoge behalten ihre Wischer
-    swipe = current !== null && t && !own && e.touches.length === 1 ? {x: t.clientX, y: t.clientY, t: Date.now(), lock: null} : null;
+    const own = e.target.closest?.('input, textarea, select, dialog, #nav, .nav-backdrop');   // Textfelder, Dialoge und das Menü behalten ihre Wischer
+    swipe = current !== null && t && !own && e.touches.length === 1 && singleColumn() ? {x: t.clientX, y: t.clientY, t: Date.now(), lock: null} : null;
   });
   onDoc('touchmove', e => {
     const t = e.touches && e.touches[0];
@@ -361,18 +390,18 @@ export async function mount(root, ctx) {
 
   async function sendChat() {
     const text = outgoing($('chatText').value);
-    if (current === null || !text) return;
+    if (sending || current === null || !text) return;    // läuft schon: kein zweites Funkpaket
+    const idx = current;
+    sending = true;
     $('chatSend').disabled = true;
     try {
-      await post('/api/channel', {channel: current, text});
+      await post('/api/channel', {channel: idx, text});
       if (!alive) return;
-      $('chatText').value = '';
-      replyRef = null;
-      updateChatCount();
+      if (draftFor === idx) { $('chatText').value = ''; replyRef = null; updateChatCount(); }
       await reloadMessages();
       if (alive) $('error').textContent = '';
     } catch (e) { if (alive) $('error').textContent = e.message; }
-    finally { if (alive) $('chatSend').disabled = current === null; }
+    finally { sending = false; if (alive) $('chatSend').disabled = current === null; }
   }
   $('detailToggle').onchange = async e => {
     const c = currentChannel();
@@ -381,7 +410,7 @@ export async function mount(root, ctx) {
       await put(`/api/channels/${c.idx}/view`, {show_details: e.target.checked});
       if (!alive) return;
       c.show_details = e.target.checked;
-      renderMessages(lastMsgs);
+      if (current === c.idx && msgsFor === c.idx) renderMessages(lastMsgs, lastUnread, true);
       $('error').textContent = '';
     } catch (err) { if (!alive) return; e.target.checked = !!c.show_details; $('error').textContent = err.message; }
   };
@@ -419,7 +448,7 @@ export async function mount(root, ctx) {
   }, {passive: true});
 
   $('chatSend').onclick = sendChat;
-  $('chatText').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
+  $('chatText').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) sendChat(); };     // Enter während der Wortwahl (IME) sendet nicht
 
   // ---- Anlegen / Bearbeiten ---------------------------------------------------
   function openDialog(ch) {
@@ -489,7 +518,7 @@ export async function mount(root, ctx) {
   };
 
   // ---- Live -------------------------------------------------------------------
-  get('/api/contacts').then(c => { contacts = c; if (alive && current !== null) renderMessages(lastMsgs); }).catch(() => {});
+  get('/api/contacts').then(c => { contacts = c; if (alive && current !== null && msgsFor === current) renderMessages(lastMsgs, lastUnread, true); }).catch(() => {});
   await loadList();
   refreshPush();
   if (initial !== null && channels.some(c => c.idx === Number(initial))) await openChat(Number(initial));
@@ -498,11 +527,11 @@ export async function mount(root, ctx) {
       const mine = current !== null && Number(ev.payload.channel_idx) === current;
       if (mine && document.visibilityState === 'visible') markRead(current);     // Kanal ist offen und sichtbar: gelesen
       loadList();
-      if (mine) setTimeout(() => reloadMessages().catch(() => {}), 300);
+      if (mine) setTimeout(() => reloadMessages(0, 'follow').catch(() => {}), 300);
     }),
     ctx.on('channel_read', () => loadList()),
     ctx.on('channel_repeat', ev => {
-      if (current !== null && Number(ev.payload.channel_idx) === current) reloadMessages().catch(() => {});
+      if (current !== null && Number(ev.payload.channel_idx) === current) reloadMessages(0, 'follow').catch(() => {});
     }),
     ctx.on('new_contact', () => get('/api/contacts').then(c => { contacts = c; }).catch(() => {})),
     ctx.on('_status', () => {}),

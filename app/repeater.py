@@ -5,13 +5,15 @@ Alle Regeln liegen hier, nicht im Node und nicht in der Oberfläche:
 - Befehle werden geprüft (Länge, Zeichen) und eingestuft: GESPERRT (nie), RISKANT (nur mit ausdrücklicher Bestätigung),
   OHNE ANTWORT (Neustart & Co.: es wird nicht gewartet), GEHEIM (Passwörter: nie im Protokoll/Verlauf, Antwort wird geschwärzt).
 - Einstellungen werden aus einem Katalog gebaut und geprüft (Wertebereiche laut MeshCore-CLI-Doku), die Oberfläche setzt nie rohe Befehle zusammen.
-- Pro Repeater höchstens ein Befehl alle 2 s (Funkzeit ist begrenzt), ein Befehl gleichzeitig.
+- Pro Repeater höchstens ein Funkpaket alle 2 s (Funkzeit ist begrenzt), ein Befehl gleichzeitig. Gilt für ALLE Funkwege
+  (Anmelden, Befehle, Nachbarn, Zugriffsliste, Abmelden) über `_radio_slot`.
 - Passwörter: standardmäßig nur im Arbeitsspeicher. Nur auf ausdrücklichen Wunsch in `repeater_secrets.json` (Rechte 600, neben der
   Datenbank, NICHT in der Datenbank und damit nicht in deren Sicherungen). Die Schnittstelle gibt nie ein Passwort zurück.
 Es gibt im Programm keine Benutzeranmeldung: Wer die Oberfläche erreicht und ein gespeichertes Passwort freigibt, kann den Repeater verwalten.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -31,7 +33,7 @@ MIN_GAP_S = 2.0
 HISTORY = 100
 NO_REPLY = ("reboot", "poweroff", "shutdown", "clkreboot")
 BLOCKED = ("erase", "set prv.key", "get prv.key")                    # Werkseinstellung/Identitätsschlüssel: nie per Funk
-SECRET_PREFIXES = ("password", "set guest.password")
+SECRET_PREFIXES = ("password", "set guest.password", "get guest.password")   # lesen: Antwort enthält das Gast-Passwort
 RISKY: tuple[tuple[str, str], ...] = (
     ("reboot", "Der Repeater startet neu und ist kurz nicht erreichbar."),
     ("clkreboot", "Der Repeater setzt die Uhr zurück und startet neu."),
@@ -125,8 +127,8 @@ def classify(cmd: str) -> dict:
         if low == b or low.startswith(b + " "):
             raise RepeaterError(f"„{b}“ ist über Funk gesperrt (nur am Gerät per USB-Kabel möglich).")
     risky = next((why for prefix, why in RISKY if low == prefix or low.startswith(prefix + " ")), None)
-    if low.startswith("set repeat") and low.endswith("on"):
-        risky = None                                              # Einschalten ist harmlos
+    if low == "set repeat on":
+        risky = None                                              # nur genau das Einschalten ist harmlos
     secret = any(low == p or low.startswith(p + " ") for p in SECRET_PREFIXES)
     no_reply = any(low == p for p in NO_REPLY)
     return {"command": cmd, "risky": risky, "secret": secret, "no_reply": no_reply}
@@ -234,16 +236,32 @@ Logger = Callable[[str, str], Awaitable[None]]
 
 class RepeaterAdmin:
     def __init__(self, node: BaseNode, log_line: Logger | None = None, vault: PasswordVault | None = None,
-                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time, store=None):
+                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time, store=None,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
         self.store = store
         self.node, self._log, self.vault = node, log_line, vault or PasswordVault(None)
-        self._clock, self._wall = clock, wall
+        self._clock, self._wall, self._sleep = clock, wall, sleep
         self._sessions: dict[str, dict] = {}
         self._mem_pw: dict[str, str] = {}
-        self._last_cmd: dict[str, float] = {}
+        self._last_cmd: dict[str, tuple[float, str]] = {}          # key → (Zeitpunkt des letzten Funkpakets, Art)
         self._history: dict[str, deque] = {}
 
     # ---- Hilfen -------------------------------------------------------------
+    async def _radio_slot(self, key: str, kind: str) -> None:
+        """Gemeinsames Tempolimit aller Funkwege zu einem Repeater: höchstens ein Paket alle MIN_GAP_S.
+        Folgt der Schritt direkt auf eine Anmeldung (auch die stille in `command`) oder ist es eine Abmeldung, wird die
+        Restzeit gewartet (höchstens MIN_GAP_S), damit der Befehl des Nutzers trotzdem klappt; sonst „Zu schnell“.
+        Der Zeitpunkt wird vor dem Warten reserviert, damit parallele Anfragen nicht gemeinsam losfunken."""
+        last, last_kind = self._last_cmd.get(key, (-1e9, ""))
+        now = self._clock()
+        wait = MIN_GAP_S - (now - last)
+        if wait > 0 and (wait > MIN_GAP_S or (last_kind != "login" and kind != "logout")):
+            raise RepeaterError("Zu schnell: pro Repeater höchstens ein Befehl alle 2 Sekunden (Funkzeit ist knapp).")
+        wait = max(0.0, wait)
+        self._last_cmd[key] = (now + wait, kind)
+        if wait > 0:
+            await self._sleep(wait)
+
     async def _target(self, key: str) -> dict:
         contacts = await self.node.contacts()
         c = next((c for c in contacts if c["public_key"] == key), None)
@@ -280,6 +298,7 @@ class RepeaterAdmin:
             raise RepeaterError("Passwort fehlt")
         if len(pw.encode("utf-8")) > 15:
             raise RepeaterError("Passwörter sind bei MeshCore höchstens 15 Zeichen lang")
+        await self._radio_slot(key, "login")
         try:
             res = await self.node.repeater_login(key, pw)
         except NodeError:
@@ -302,8 +321,9 @@ class RepeaterAdmin:
         self._sessions.pop(key, None)
         self._mem_pw.pop(key, None)
         try:
+            await self._radio_slot(key, "logout")
             await self.node.repeater_logout(key)
-        except NodeError as e:
+        except NodeError as e:                                          # auch „Zu schnell“: lokal trotzdem abgemeldet
             log.info("Abmelden am Repeater nicht bestätigt: %s", e)      # lokal sind wir ohnehin abgemeldet
         await self._say("info", f"Repeater {c['name']}: abgemeldet")
         return self.status(key)
@@ -324,13 +344,10 @@ class RepeaterAdmin:
                 await self.login(key)                                  # Sitzung weg (z. B. Neustart des Programms): still erneuern
             else:
                 raise RepeaterError("Nicht angemeldet: erst am Repeater anmelden.")
-        now = self._clock()
-        if now - self._last_cmd.get(key, -1e9) < MIN_GAP_S:
-            raise RepeaterError("Zu schnell: pro Repeater höchstens ein Befehl alle 2 Sekunden (Funkzeit ist knapp).")
-        self._last_cmd[key] = now
+        await self._radio_slot(key, "command")                         # nach (stiller) Anmeldung: Restzeit warten
         shown = "(geheim)" if info["secret"] else info["command"]
         try:
-            res = await self.node.repeater_command(key, info["command"], wait=not info["no_reply"])
+            res = await self.node.repeater_command(key, info["command"], wait=not info["no_reply"], secret=info["secret"])
         except NodeError as e:
             self._add_history(key, shown, str(e), False)
             await self._say("warn", f"Repeater {c['name']}: Befehl „{shown}“ fehlgeschlagen: {e}")
@@ -363,6 +380,7 @@ class RepeaterAdmin:
         await self._target(key)
         if key not in self._sessions:
             raise RepeaterError("Nicht angemeldet: erst am Repeater anmelden.")
+        await self._radio_slot(key, "neighbours")
         res = await self.node.repeater_neighbours(key)
         res = await self._with_names(res, "neighbours")
         if self.store is not None:
@@ -376,6 +394,7 @@ class RepeaterAdmin:
         await self._target(key)
         if key not in self._sessions:
             raise RepeaterError("Nicht angemeldet: erst am Repeater anmelden.")
+        await self._radio_slot(key, "acl")
         entries = await self.node.repeater_acl(key)
         res = await self._with_names({"entries": entries}, "entries")
         for e in res["entries"]:

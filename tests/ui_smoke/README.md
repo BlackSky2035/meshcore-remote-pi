@@ -17,3 +17,8 @@ jsdom kann keine Layouts rendern: geprüft wird Inhalt und Verhalten, nicht das 
 
 Mit `MC_BATTERY_POLL_GAP_S=1` beim Starten des Servers (Schritt 1) prüft der Test zusätzlich, dass bei „Jetzt abfragen“ auf der
 Akku-Seite der zweite Repeater nach der Pause abgefragt wird; mit der Standardpause (20 s) entfallen diese beiden Prüfungen.
+
+Wettläufe (verspätete Antworten, schnelles Umschalten) prüft der Test mit `fetchHook` in `smoke.mjs`: einzelne Anfragen werden verzögert
+(`late(ms)`) oder durch eine feste Antwort ersetzt (`fake(daten, ms)`). Die Seiten-Wischgeste wird mit einem eingesetzten `window.matchMedia`
+für die einspaltige (≤ 640 px) und die zweispaltige Ansicht geprüft. Was jsdom nicht kann (echtes `setPointerCapture` auf der Netz-Seite),
+wurde zusätzlich in Chromium (Playwright) geprüft.

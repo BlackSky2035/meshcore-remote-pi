@@ -159,21 +159,25 @@ export async function mount(root, ctx) {
     }
   }
 
+  // Ladezähler: eine ältere, später eintreffende Antwort (anderer Zeitraum/Repeater) überschreibt nie die neuere.
+  let loadSeq = 0;
   async function loadData() {
-    const act = active();
+    const act = active(), my = ++loadSeq, h = hours;
+    const stale = () => !alive || my !== loadSeq;
     try {
       const fresh = {};
-      for (const a of act) fresh[a.k] = (await get(`/api/battery/${a.k}?hours=${hours}`)).rows;
+      for (const a of act) { fresh[a.k] = (await get(`/api/battery/${a.k}?hours=${h}`)).rows; if (stale()) return; }
       rowsBy = fresh;
       $('error').textContent = '';
-    } catch (e) { $('error').textContent = e.message; rowsBy = {}; }
-    $('csv').href = act[0] ? `/api/battery/${act[0].k}/export.csv?hours=${hours}` : '#';
+    } catch (e) { if (stale()) return; $('error').textContent = e.message; rowsBy = {}; }
+    $('csv').href = act[0] ? `/api/battery/${act[0].k}/export.csv?hours=${h}` : '#';
     showView();
   }
 
   async function loadNodes() {
     try {
       const d = await get('/api/battery/nodes');
+      if (!alive) return;
       nodes = d.nodes;
       if (typeof d.poll_gap_s === 'number') pollGapS = d.poll_gap_s;
       if (!selectionRestored) {          // gespeicherte Auswahl wiederherstellen (bleibt, bis sie geändert wird)
@@ -181,7 +185,7 @@ export async function mount(root, ctx) {
         sel = Array.from({length: SLOTS}, (_, i) => (d.selection || [])[i] || null);
       }
       $('error').textContent = '';
-    } catch (e) { $('error').textContent = e.message; return; }
+    } catch (e) { if (alive) $('error').textContent = e.message; return; }
     $('empty').hidden = nodes.length > 0;
     $('controls').hidden = nodes.length === 0;
     // Nur noch überwachte Repeater, jeder höchstens einmal; ohne Auswahl wird der erste Repeater vorgewählt.

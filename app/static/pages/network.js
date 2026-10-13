@@ -174,18 +174,23 @@ function setupZoom(root, W, H) {
   }
   function reset() { k = 1; x = 0; y = 0; apply(); }
 
-  let dragging = false, lastX = 0, lastY = 0;
+  let dragging = false, lastX = 0, lastY = 0, startX = 0, startY = 0, moved = false, swallowClick = false;
   const touches = new Map();
   let pinchDist = 0;
+  // Zeiger erst festhalten, wenn er sich bewegt hat (ab 4 px): Sofortiges setPointerCapture lenkt den folgenden „click“ auf das SVG um,
+  // dann zeigt Antippen eines Punkts nie seinen Namen.
+  const capture = id => { try { if (!svg.hasPointerCapture?.(id)) svg.setPointerCapture(id); } catch { /* Zeiger schon weg */ } };
 
   svg.addEventListener('pointerdown', e => {
-    svg.setPointerCapture(e.pointerId);
+    moved = false; startX = e.clientX; startY = e.clientY;
     if (e.pointerType === 'touch') {
       touches.set(e.pointerId, {x: e.clientX, y: e.clientY});
       if (touches.size === 2) {
         dragging = false;
         const [a, b] = [...touches.values()];
         pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+        moved = true;
+        touches.forEach((_, id) => capture(id));
         return;
       }
     }
@@ -204,12 +209,18 @@ function setupZoom(root, W, H) {
       }
     }
     if (!dragging) return;
+    if (!moved) {
+      if (Math.hypot(e.clientX - startX, e.clientY - startY) < 4) return;      // Zittern beim Antippen ist kein Ziehen
+      moved = true;
+      capture(e.pointerId);
+    }
     const cur = toSvgPoint(e.clientX, e.clientY), prev = toSvgPoint(lastX, lastY);
     x += cur.x - prev.x; y += cur.y - prev.y;
     lastX = e.clientX; lastY = e.clientY;
     apply();
   });
   function endPointer(e) {
+    if (moved && e.type === 'pointerup') swallowClick = true;            // nach dem Ziehen kein „Antippen“ auswerten
     touches.delete(e.pointerId);
     pinchDist = 0;
     dragging = false;
@@ -217,6 +228,8 @@ function setupZoom(root, W, H) {
   }
   svg.addEventListener('pointerup', endPointer);
   svg.addEventListener('pointercancel', endPointer);
+  svg.addEventListener('pointerdown', () => { swallowClick = false; }, true);
+  svg.addEventListener('click', e => { if (swallowClick) { swallowClick = false; e.stopPropagation(); } }, true);
   svg.addEventListener('wheel', e => {
     e.preventDefault();
     zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15);

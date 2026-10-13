@@ -1,9 +1,11 @@
 """Supervisor: hält die Verbindung zum Node am Leben und überwacht den USB-Anschluss.
 
 Pro Durchlauf (alle `cycle_s` Sekunden):
-1. Anschlüsse lesen (Zeitlimit; Fehler = „nichts erkannt“).
+1. Anschlüsse lesen (Zeitlimit; Fehler = „nichts erkannt“, eine bestehende Verbindung wird dann aber nicht getrennt).
 2. Verschwand der genutzte Anschluss (Kabel gezogen), wird die Verbindung sofort getrennt – nicht erst nach einem Zeitlimit.
+   Verglichen werden aufgelöste Pfade (`/dev/serial/by-id/…` ist ein Symlink), siehe `usb.port_present`.
 3. Alle `HEARTBEAT_S` Sekunden fragt er den Node etwas; zweimal keine Antwort in Folge → trennen und neu verbinden.
+   Läuft gerade ein langer Befehl am Node, gilt das als Antwort (`alive()` wartet nicht auf die Befehlssperre).
 4. Ist der Node nicht verbunden, aber ein Gerät da, verbindet er nach kurzer Wartezeit (das Gerät braucht nach dem
    Einstecken einen Moment) mit wachsendem Abstand bei Fehlern (3 s … 30 s).
 5. Zustand an den `UsbMonitor` melden (Verlauf, Verfügbarkeit, Meldung bei Ausfall).
@@ -46,7 +48,8 @@ class Supervisor:
         self._last_detail = ""
 
     # ---- Hilfen ------------------------------------------------------------
-    async def _read_ports(self) -> list[dict]:
+    async def _read_ports(self) -> list[dict] | None:
+        """Anschlüsse lesen; None = Abfrage gescheitert (Zeitlimit/Fehler), das ist NICHT „kein Gerät“."""
         sim = self.node.usb_ports()
         if sim is not None:
             return sim
@@ -55,7 +58,7 @@ class Supervisor:
             return await asyncio.wait_for(asyncio.to_thread(fn), 5)
         except Exception as e:
             log.warning("Anschlüsse nicht lesbar: %s", e)
-            return []
+            return None
 
     async def _drop(self, why: str, announce: bool = True) -> None:
         """Verbindung kappen (hängt nie länger als ein paar Sekunden)."""
@@ -111,15 +114,16 @@ class Supervisor:
             if mon is not None and uses_usb:
                 await mon.update(usb.MAINTENANCE, None, "", "", [])
             return
-        ports = await self._read_ports() if uses_usb else []
+        read = await self._read_ports() if uses_usb else []
+        ports = read or []
 
         try:
             connected = bool(node.connected)
         except Exception:
             connected = False
 
-        # 2. Kabel gezogen oder Port weg?
-        if connected and uses_usb and node.port and not any(p["device"] == node.port for p in ports):
+        # 2. Kabel gezogen oder Port weg? (Symlinks aufgelöst; gescheiterte Abfrage trennt nie)
+        if connected and uses_usb and node.port and read is not None and not usb.port_present(node.port, ports):
             log.warning("USB-Anschluss %s ist verschwunden", node.port)
             await self._drop("usb_unplugged")
             connected = False

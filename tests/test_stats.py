@@ -115,3 +115,24 @@ async def test_real_node_stats():
     n.mc.commands.get_stats_radio = lambda: _co(SimpleNamespace(type="error", payload={"reason": "x"}))
     with pytest.raises(NodeError):
         await n.node_stats()
+
+
+async def test_run_survives_broken_settings(rt):
+    """Früher beendete ein Datenbankfehler beim Lesen der Einstellung die Aufgabe still (keine Statistik mehr bis zum Neustart)."""
+    import asyncio
+
+    async def boom(*a, **k):
+        raise RuntimeError("db")
+    rt.store.get_setting = boom
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+        if len(sleeps) >= 3:
+            raise asyncio.CancelledError
+    s = S.StatsSampler(rt.node, rt.store, sleep=fake_sleep)
+    calls = []
+    s.sample = lambda: calls.append(1) or asyncio.sleep(0)
+    with pytest.raises(asyncio.CancelledError):
+        await s.run()
+    assert s.enabled is True and len(calls) == 2                  # Standard „an“, misst weiter

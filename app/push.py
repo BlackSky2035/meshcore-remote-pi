@@ -30,6 +30,7 @@ class PushService:
     def __init__(self, store: AsyncStorage, node=None, send=webpush.send, clock=time.time, contact: str = DEFAULT_CONTACT):
         self.store, self.node, self._send, self._clock, self.contact = store, node, send, clock, contact
         self._vapid: dict | None = None
+        self._vapid_lock = asyncio.Lock()      # gleichzeitige erste Aufrufe dürfen nicht zwei verschiedene Schlüssel erzeugen
         self._sent: dict[str, deque] = defaultdict(deque)
         self._sem = asyncio.Semaphore(4)
         self._tasks: set[asyncio.Task] = set()
@@ -39,11 +40,13 @@ class PushService:
     # ---- Schlüssel -------------------------------------------------------
     async def vapid(self) -> dict:
         if self._vapid is None:
-            saved = await self.store.get_setting("push_vapid")
-            if not (isinstance(saved, dict) and saved.get("private_pem") and saved.get("public_key")):
-                saved = webpush.generate_vapid()
-                await self.store.set_setting("push_vapid", saved)
-            self._vapid = saved
+            async with self._vapid_lock:
+                if self._vapid is None:
+                    saved = await self.store.get_setting("push_vapid")
+                    if not (isinstance(saved, dict) and saved.get("private_pem") and saved.get("public_key")):
+                        saved = webpush.generate_vapid()
+                        await self.store.set_setting("push_vapid", saved)
+                    self._vapid = saved
         return self._vapid
 
     async def public_key(self) -> str:
@@ -72,9 +75,9 @@ class PushService:
             await asyncio.gather(*pending, return_exceptions=True)
             await asyncio.sleep(0)
 
-    def notify_channel(self, idx: int, sender: str | None, text: str) -> None:
-        """Sofort zurückkehren; das Senden passiert im Hintergrund."""
-        self._spawn(self._guard(self._channel(idx, sender, text)))
+    def notify_channel(self, idx: int, sender: str | None, text: str, msg_id: int | None = None) -> None:
+        """Sofort zurückkehren; das Senden passiert im Hintergrund. `msg_id` = ID der schon gespeicherten Nachricht (für „einmal“)."""
+        self._spawn(self._guard(self._channel(idx, sender, text, msg_id)))
 
     def notify_keyword(self, word: str, where: str, sender: str | None, text: str) -> None:
         """Stichwort gefunden: geht an alle angemeldeten Geräte, auch wenn der Kanal dort stummgeschaltet ist."""
@@ -126,15 +129,20 @@ class PushService:
                 self._names = (self._clock(), names)          # nicht bei jeder Nachricht neu versuchen
         return names.get(idx) or f"Kanal {idx}"
 
-    async def _channel(self, idx: int, sender: str | None, text: str) -> None:
+    async def _channel(self, idx: int, sender: str | None, text: str, msg_id: int | None = None) -> None:
         subs = [s for s in await self.store.push_subs() if idx in s["channels"]]
         if not subs:
             return
         # „einmal“: nur melden, wenn diese Nachricht die erste ungelesene ist. Danach schweigt der Kanal, bis er auf
-        # der Webseite angesehen wurde (dann ist der Zähler wieder 0). Zustandslos: der Zähler steht in der Datenbank.
+        # der Webseite angesehen wurde. Zustandslos: entschieden wird über die Nachrichten-ID (älteste ungelesene == diese), nicht über den
+        # Zähler; so meldet bei zwei fast gleichzeitigen Nachrichten genau eine (früher sahen beide „2 ungelesen“ und keine meldete).
         if any(s["channels"][idx] == "once" for s in subs):
-            unread = (await self.store.channel_unread()).get(idx, 0)
-            subs = [s for s in subs if s["channels"][idx] == "every" or unread <= 1]
+            if msg_id is not None:
+                first = await self.store.channel_first_unread(idx)
+                first_one = first is None or first == msg_id
+            else:
+                first_one = (await self.store.channel_unread()).get(idx, 0) <= 1
+            subs = [s for s in subs if s["channels"][idx] == "every" or first_one]
             if not subs:
                 return
         name = await self._channel_name(idx)

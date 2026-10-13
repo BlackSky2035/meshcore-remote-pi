@@ -15,11 +15,20 @@ globalThis.HTMLElement = window.HTMLElement;
 globalThis.FormData = window.FormData;
 globalThis.confirm = () => true;
 const realFetch = globalThis.fetch;
-globalThis.fetch = (u, o) => realFetch(new URL(u, BASE), o);
+// fetchHook(url): für Wettlauf-Tests Antworten verzögern oder ersetzen (Rückgabe Response = ersetzt, sonst echter Server)
+let fetchHook = null;
+globalThis.fetch = async (u, o) => {
+  if (fetchHook) { const r = await fetchHook(String(u)); if (r) return r; }
+  return realFetch(new URL(u, BASE), o);
+};
+const fake = (data, ms = 0) => new Promise(r => setTimeout(() => r(new Response(JSON.stringify(data), {status: 200, headers: {'content-type': 'application/json'}})), ms));
+const late = ms => new Promise(r => setTimeout(r, ms)).then(() => null);   // nur verzögern, dann echter Server
 window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
 window.HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
 window.HTMLFormElement.prototype.reportValidity = () => true;
 window.SVGElement.prototype.createSVGRect = () => ({});
+window.SVGElement.prototype.createSVGPoint = () => ({x: 0, y: 0, matrixTransform() { return this; }});
+window.SVGElement.prototype.getScreenCTM = () => null;
 window.eval(fs.readFileSync(`${STATIC}/vendor/leaflet/leaflet.js`, 'utf8'));
 
 let failures = 0;
@@ -34,6 +43,7 @@ const fresh = () => { const r = document.getElementById('view'); r.innerHTML = '
 const click = el => el.dispatchEvent(new window.MouseEvent('click', {bubbles: true}));
 const errors = [];
 window.addEventListener('error', e => errors.push(e.message));
+process.on('unhandledRejection', e => errors.push('unhandled: ' + (e?.message || e)));
 
 const status = await (await fetch('/api/status')).json();
 
@@ -88,6 +98,23 @@ const status = await (await fetch('/api/status')).json();
   root.querySelector('#chatText').value = 'Hallo aus dem Test';
   click(root.querySelector('#chatSend')); await sleep(500);
   check(root.querySelector('#chat').textContent.includes('Hallo aus dem Test'), 'Gesendete Nachricht erscheint im Chat');
+  // Enter zweimal schnell (Senden läuft noch) = nur eine Funknachricht; Enter während der Wortwahl (IME) sendet nicht
+  const enter = (el, extra = {}) => el.dispatchEvent(new window.KeyboardEvent('keydown', {key: 'Enter', bubbles: true, ...extra}));
+  const countSent = async (peer, text) => (await (await fetch(`/api/messages?peer=${peer}&limit=100`)).json()).filter(m => m.direction === 'out' && m.text === text).length;
+  root.querySelector('#chatText').value = 'Doppel-Enter Kontakt';
+  enter(root.querySelector('#chatText')); enter(root.querySelector('#chatText')); await sleep(600);
+  check(await countSent('a1'.repeat(6), 'Doppel-Enter Kontakt') === 1, 'Kontakt-Chat: zweimal Enter während des Sendens sendet nur einmal');
+  root.querySelector('#chatText').value = 'IME Kontakt';
+  enter(root.querySelector('#chatText'), {isComposing: true}); await sleep(400);
+  check(await countSent('a1'.repeat(6), 'IME Kontakt') === 0 && root.querySelector('#chatText').value === 'IME Kontakt', 'Kontakt-Chat: Enter während der Wortwahl (IME) sendet nicht');
+  root.querySelector('#chatText').value = '';
+  // Schneller Wechsel: die verspätete Antwort für Alice darf nicht unter Bobs Titel erscheinen
+  fetchHook = u => u.includes('peer=' + 'a1'.repeat(6)) ? fake([{direction: 'in', text: 'VERALTET-ALICE', ts: Date.now() / 1000}], 500) : null;
+  click([...rows()].find(r => r.textContent.includes('Alice')).querySelector('[data-act=chat]'));
+  await sleep(50);
+  click([...rows()].find(r => r.textContent.includes('Bob')).querySelector('[data-act=chat]'));
+  await sleep(800); fetchHook = null;
+  check(root.querySelector('#chatTitle').textContent.includes('Bob') && !root.querySelector('#chat').textContent.includes('VERALTET-ALICE'), 'Kontakt-Chat: schneller Wechsel zeigt keinen fremden Verlauf');
 
   // Löschen
   const neu = [...rows()].find(r => r.dataset.key.startsWith('abab'));
@@ -125,11 +152,12 @@ const status = await (await fetch('/api/status')).json();
   rep.querySelector('#repPw').value = 'falsch';
   rep.querySelector('#repLoginForm').dispatchEvent(new window.Event('submit', {cancelable: true})); await sleep(700);
   check(rep.querySelector('#repMsg').textContent.includes('Anmeldebestätigung'), 'Falsches Passwort wird gemeldet');
+  await sleep(2300);                                                  // Tempolimit gilt auch für Anmeldungen (ein Funkpaket je 2 s)
   rep.querySelector('#repPw').value = 'sim';
   rep.querySelector('#repLoginForm').dispatchEvent(new window.Event('submit', {cancelable: true})); await sleep(700);
   check(!rep.querySelector('#repBody').hidden && rep.querySelector('#repWho').textContent.includes('Admin'), 'Anmeldung klappt (Admin)');
   check(rep.querySelectorAll('#repSettings input, #repSettings select').length >= 15, 'Einstellungsliste da');
-  click(rep.querySelector('[data-quick="0"]')); await sleep(600);
+  click(rep.querySelector('[data-quick="0"]')); await sleep(2600);    // direkt nach der Anmeldung wartet der Server die Restzeit (2 s) ab
   check(rep.querySelector('#repTerm').textContent.includes('MeshCore'), 'Schnellaktion „Version“ zeigt Antwort');
   await sleep(2300);
   click(rep.querySelector('[data-read=name]')); await sleep(600);
@@ -150,6 +178,17 @@ const status = await (await fetch('/api/status')).json();
   root.querySelector('#showClients').checked = true;
   root.querySelector('#showClients').dispatchEvent(new window.Event('change'));
   check(rows().length === 5, 'Mit Clients: 5 Zeilen');
+  // Panel schließen, während die Anmeldung (Funk) noch läuft: kein Fehler, kein Fehlerbanner
+  await sleep(2300);
+  click([...rows()].find(r => r.textContent.includes('Dach')).querySelector('[data-act=manage]')); await sleep(500);
+  fetchHook = u => u.includes('/login') ? late(400) : null;
+  rep.querySelector('#repPw').value = 'sim';
+  rep.querySelector('#repLoginForm').dispatchEvent(new window.Event('submit', {cancelable: true}));
+  await sleep(50);
+  rep.querySelector('#repClose').click();
+  await sleep(1200); fetchHook = null;
+  check(rep.hidden && rep.innerHTML === '' && root.querySelector('#error').textContent === '' && errors.length === 0,
+        `Verwalten: Schließen während einer Funkanfrage wirft nicht ${errors.length ? JSON.stringify(errors) : ''}`);
   un();
 }
 
@@ -162,6 +201,19 @@ const status = await (await fetch('/api/status')).json();
   await sleep(300);
   check(root.querySelectorAll('.leaflet-interactive').length >= 4, `Karte zeigt Marker (${root.querySelectorAll('.leaflet-interactive').length})`);
   check(root.querySelector('#noPosCard').hidden === false && root.querySelector('#noPos').textContent.includes('Raum'), 'Knoten ohne Position gelistet');
+  // Verbindungen: an und gleich wieder aus, bevor /api/network antwortet -> keine Linien; schnelles An/An -> nur eine Ebene
+  const shapes = () => root.querySelectorAll('.leaflet-interactive').length;
+  const base = shapes(), links = root.querySelector('#showLinks');
+  const toggle = on => { links.checked = on; links.dispatchEvent(new window.Event('change')); };
+  toggle(true); await sleep(400);
+  const withLinks = shapes();
+  check(withLinks > base, `Karte: Verbindungen werden gezeichnet (${base} -> ${withLinks})`);
+  toggle(false); await sleep(100);
+  fetchHook = u => u.includes('/api/network') ? late(400) : null;
+  toggle(true); toggle(false); await sleep(700);
+  check(shapes() === base, `Karte: an/aus vor der Antwort lässt keine Linien zurück (${shapes()} statt ${base})`);
+  toggle(true); toggle(false); toggle(true); await sleep(700); fetchHook = null;
+  check(shapes() === withLinks, `Karte: schnelles Umschalten ergibt genau eine Linien-Ebene (${shapes()} statt ${withLinks})`);
   un();
   // Seitenwechsel, während die Karte noch lädt: darf nicht werfen („Map container not found“)
   const r2 = fresh();
@@ -176,8 +228,10 @@ const status = await (await fetch('/api/status')).json();
 // ---- Kanäle
 {
   const root = fresh();
+  window.history.pushState({mcChat: 1}, '');                          // Rest eines Chats, der über das Menü verlassen wurde
   const un = await (await imp('pages/channels.js')).mount(root, ctx(status));
   await sleep(300);
+  check(!window.history.state?.mcChat, 'Kanäle: verwaister Chat-Verlaufseintrag wird beim Öffnen der Seite ersetzt');
   const items = () => root.querySelectorAll('.chanitem');
   check(items().length === 2, `Kanalliste hat 2 Einträge (ist ${items().length})`);
   check(root.querySelector('#slots').textContent.includes('2 von 40'), 'Belegte Plätze werden angezeigt');
@@ -199,6 +253,19 @@ const status = await (await fetch('/api/status')).json();
   click(root.querySelector('#chatSend')); await sleep(400);
   check(root.querySelector('#chat').textContent.includes('Hallo Kanal'), 'Gesendete Nachricht erscheint im Chat');
   check(root.querySelector('#chat .bubble.out .who')?.textContent === 'Ich', 'Eigene Nachricht ist als „Ich“ markiert');
+  // Enter zweimal schnell = nur eine Funknachricht; Enter während der Wortwahl (IME) sendet nicht
+  {
+    const chIdx = Number([...items()].find(i => i.textContent.includes('UI-Test')).dataset.idx);
+    const enter = (extra = {}) => root.querySelector('#chatText').dispatchEvent(new window.KeyboardEvent('keydown', {key: 'Enter', bubbles: true, ...extra}));
+    const countSent = async text => (await (await fetch(`/api/channels/${chIdx}/messages?limit=200`)).json()).filter(m => m.direction === 'out' && m.text === text).length;
+    root.querySelector('#chatText').value = 'Doppel-Enter Kanal';
+    enter(); enter(); await sleep(600);
+    check(await countSent('Doppel-Enter Kanal') === 1, 'Kanal-Chat: zweimal Enter während des Sendens sendet nur einmal');
+    root.querySelector('#chatText').value = 'IME Kanal';
+    enter({isComposing: true}); await sleep(400);
+    check(await countSent('IME Kanal') === 0 && root.querySelector('#chatText').value === 'IME Kanal', 'Kanal-Chat: Enter während der Wortwahl (IME) sendet nicht');
+    root.querySelector('#chatText').value = '';
+  }
 
   root.querySelector('#fName').value = '';
   click(root.querySelector('#addBtn')); await sleep(100);
@@ -241,6 +308,22 @@ const status = await (await fetch('/api/status')).json();
   check(root.querySelector('#chatTitle').textContent === 'Kein Kanal gewählt' && root.querySelector('#chatCard').style.transform === '', 'Mitziehen: weit genug, Chat gleitet weg und schließt');
   [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(400);
   check(root.querySelector('#chatTitle').textContent === 'UI-Test', 'Kanal lässt sich nach dem Wischen wieder öffnen');
+  // Wischen nur in der einspaltigen Handy-Ansicht (max. 640 px) und nicht im offenen Menü
+  window.matchMedia = q => ({matches: false, media: q});
+  swipeBy(150, 10); await sleep(100);
+  check(root.querySelector('#chatTitle').textContent === 'UI-Test', 'Wischen: in der zweispaltigen Ansicht (Tablet/PC) passiert nichts');
+  window.matchMedia = q => ({matches: /max-width:\s*640px/.test(q), media: q});
+  const nav = document.createElement('nav'); nav.id = 'nav'; nav.innerHTML = '<a>Menü</a>'; document.body.appendChild(nav);
+  const navTouch = (type, x, y) => { const ev = new window.Event(type, {bubbles: true}); const t = [{clientX: x, clientY: y}];
+    Object.defineProperty(ev, type === 'touchend' ? 'changedTouches' : 'touches', {value: t}); if (type === 'touchend') Object.defineProperty(ev, 'touches', {value: []});
+    nav.querySelector('a').dispatchEvent(ev); };
+  navTouch('touchstart', 100, 300); navTouch('touchend', 250, 305); await sleep(100);
+  check(root.querySelector('#chatTitle').textContent === 'UI-Test', 'Wischen im offenen Menü schließt den Chat nicht');
+  nav.remove();
+  swipeBy(150, 10); await sleep(100);
+  check(root.querySelector('#chatTitle').textContent === 'Kein Kanal gewählt', 'Wischen: in der Handy-Ansicht (max. 640 px) schließt es den Chat');
+  delete window.matchMedia;
+  [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(400);
   check(st.channels.filter(c => c.name !== 'UI-Test').every(c => c.show_details === false), 'Andere Kanäle bleiben ausgeblendet');
   click(root.querySelector('#detailToggle')); await sleep(300);
   check(!root.querySelector('#chat .detail'), 'Ausschalten blendet die Zeilen wieder aus');
@@ -292,6 +375,26 @@ const status = await (await fetch('/api/status')).json();
   root.querySelector('#chatText').value = '';
   root.querySelector('#chatText').dispatchEvent(new window.Event('input'));
 
+  // Kanalwechsel: Erwähnung und Entwurf bleiben nicht im Eingabefeld hängen
+  {
+    const other = () => [...items()].find(i => i.dataset.idx === '0');
+    const uiTest = () => [...items()].find(i => i.textContent.includes('UI-Test'));
+    root.querySelector('#chat').insertAdjacentHTML('beforeend', `<div class="bubble" data-name="Alice (Sim)" data-ts="${T0}">Wechsel</div>`);
+    [...root.querySelectorAll('#chat .bubble[data-name]')].pop().dispatchEvent(new window.MouseEvent('dblclick', {bubbles: true}));
+    check(root.querySelector('#chatText').value === '@[Alice (Sim)] ', 'Erwähnung vor dem Kanalwechsel gesetzt');
+    other().click(); await sleep(400);
+    check(root.querySelector('#chatText').value === '', 'Kanalwechsel: Erwähnung aus dem vorigen Kanal wandert nicht mit');
+    root.querySelector('#chatText').value = '@[Alice (Sim)] hallo';
+    root.querySelector('#chatText').dispatchEvent(new window.Event('input'));
+    check(!root.querySelector('#chatCount').textContent.includes('Uhrzeit'), 'Kanalwechsel: Antwortbezug (Uhrzeit) des vorigen Kanals ist gelöscht');
+    root.querySelector('#chatText').value = '';
+    // Schneller Wechsel: die verspätete Antwort von Kanal 0 darf nicht unter dem Titel von UI-Test erscheinen
+    fetchHook = u => u.startsWith('/api/channels/0/messages') ? fake([{direction: 'in', name: 'X', text: 'VERALTET-0', ts: Date.now() / 1000}], 500) : null;
+    other().click(); await sleep(50);
+    uiTest().click(); await sleep(800); fetchHook = null;
+    check(root.querySelector('#chatTitle').textContent === 'UI-Test' && !root.querySelector('#chat').textContent.includes('VERALTET-0'), 'Kanäle: schneller Wechsel zeigt keinen fremden Verlauf');
+  }
+
   click(root.querySelector('#keyBtn')); await sleep(300);
   check(/^[0-9a-f]{32}$/.test(root.querySelector('#keyOut').value), 'Schlüssel wird angezeigt (32 Hex-Zeichen)');
   click(root.querySelector('#keyClose'));
@@ -301,6 +404,29 @@ const status = await (await fetch('/api/status')).json();
   check(items().length === 2, 'Kanal wurde gelöscht');
   check(root.querySelector('#chatText').disabled, 'Nach dem Löschen ist der Chat gesperrt');
   un();
+}
+
+// ---- Kanäle: Sprung aus einer Push-Meldung (#/channels?c=0), Kontakte kommen erst nach dem Verlauf
+{
+  const now = Math.floor(Date.now() / 1000);
+  const msgs = [{direction: 'in', name: 'A', text: 'alt', ts: now - 300}, {direction: 'out', text: 'ich', ts: now - 200},
+    {direction: 'in', name: 'B', text: 'neu 1', ts: now - 100}, {direction: 'in', name: 'C', text: 'neu 2', ts: now - 50}];
+  fetchHook = u => u === '/api/channels' ? fake({channels: [{idx: 0, name: 'Öffentlich', unread: 2, hashtag: false, show_details: false, last_ts: now - 50}], max_channels: 40})
+    : u.startsWith('/api/channels/0/messages') ? fake(msgs)
+    : u.startsWith('/api/channels/0/read') ? fake({ok: true})
+    : u === '/api/contacts' ? late(500) : null;
+  window.location.hash = '#/channels?c=0';
+  const root = fresh();
+  const un = await (await imp('pages/channels.js')).mount(root, ctx(status));
+  await sleep(150);
+  const sepBefore = root.querySelector('#chat .unread-sep');
+  await sleep(700); fetchHook = null;
+  const sep = root.querySelector('#chat .unread-sep');
+  check(!!sepBefore && !!sep && sep.nextElementSibling?.textContent.includes('neu 1'), 'Push-Sprung: „Ungelesene Nachrichten“ bleibt, wenn die Kontakte später kommen');
+  un();
+  window.location.hash = '';
+  if (window.history.state?.mcChat) window.history.back();
+  await sleep(100);
 }
 
 // ---- Automatik
@@ -382,6 +508,11 @@ const status = await (await fetch('/api/status')).json();
   check(/\d{4}/.test(root.querySelector('#rows').textContent), 'Tabelle enthält mV-Werte');
   click(root.querySelector('#ranges [data-h="24"]')); await sleep(300);
   check(root.querySelectorAll('#rows tr').length >= 3, 'Zeitraum 24 h umschaltbar');
+  // Verspätete ältere Antwort (7 Tage, hier leer) überschreibt die neuere (24 h) nicht
+  fetchHook = u => u.startsWith(`/api/battery/${REP}?hours=168`) ? fake({rows: []}, 500) : null;
+  click(root.querySelector('#ranges [data-h="168"]')); await sleep(50);
+  click(root.querySelector('#ranges [data-h="24"]')); await sleep(900); fetchHook = null;
+  check(root.querySelectorAll('#rows tr').length >= 3 && root.querySelector('#csv').href.includes('hours=24'), 'Akku: verspätete ältere Antwort überschreibt die neuere nicht');
   un();
 }
 
@@ -475,6 +606,18 @@ const status = await (await fetch('/api/status')).json();
   await sleep(400);
   check(root.querySelector('#netGraph svg') !== null && root.querySelectorAll('#netGraph circle').length >= 5, 'Netz: Grafik gezeichnet');
   check(/über Repeater Hügel/.test(root.querySelector('#netRoutes').textContent), 'Netz: Weg mit Zwischenstation benannt');
+  // Antippen eines Punkts zeigt seinen Namen (Zeiger wird erst beim Ziehen festgehalten); nach dem Ziehen kein „Antippen“
+  {
+    const PE = window.PointerEvent || window.MouseEvent;
+    const ptr = (el, type, x, y) => el.dispatchEvent(new PE(type, {bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse'}));
+    const node = root.querySelector('#netGraph g.net-node:not([data-id="me"])'), circle = node.querySelector('circle'), label = node.querySelector('.net-label');
+    ptr(circle, 'pointerdown', 50, 50); ptr(circle, 'pointerup', 51, 50); click(circle);
+    check(!label.hasAttribute('visibility'), 'Netz: Antippen eines Punkts zeigt seinen Namen');
+    click(root.querySelector('#netSvg'));
+    check(label.getAttribute('visibility') === 'hidden', 'Netz: Antippen daneben versteckt den Namen wieder');
+    ptr(circle, 'pointerdown', 50, 50); ptr(circle, 'pointermove', 90, 60); ptr(circle, 'pointerup', 90, 60); click(circle);
+    check(label.getAttribute('visibility') === 'hidden', 'Netz: Ziehen (Verschieben) zählt nicht als Antippen');
+  }
   un();
 
   root = fresh();
@@ -498,6 +641,15 @@ const status = await (await fetch('/api/status')).json();
   click(root.querySelector('#read')); await sleep(600);
   check(/Luftfeuchte/.test(root.querySelector('#latest').textContent) && /Temperatur/.test(root.querySelector('#latest').textContent), 'Sensoren: Werte gelesen');
   check(root.querySelectorAll('#charts [data-ch]').length >= 3, 'Sensoren: Verläufe angelegt');
+  // Zeitraum-Knöpfe bekommen das Ereignis (früher: „Cannot read properties of undefined (reading 'target')“)
+  click(root.querySelector('#ranges [data-h="24"]')); await sleep(400);
+  check(root.querySelector('#error').textContent === '' && root.querySelector('#ranges [data-h="24"]').classList.contains('on'), `Sensoren: Zeitraum umschaltbar ohne Fehler (${root.querySelector('#error').textContent})`);
+  // Verspätete ältere Antwort (30 Tage) überschreibt die neuere (7 Tage) nicht
+  let first = true;
+  fetchHook = u => u === `/api/sensors/${REP}` && first ? (first = false, fake({latest: []}, 500)) : null;
+  click(root.querySelector('#ranges [data-h="720"]')); await sleep(50);
+  click(root.querySelector('#ranges [data-h="168"]')); await sleep(900); fetchHook = null;
+  check(/Temperatur/.test(root.querySelector('#latest').textContent) && root.querySelectorAll('#charts [data-ch]').length >= 3, 'Sensoren: verspätete ältere Antwort überschreibt die neuere nicht');
   un();
 
   await fetch('/api/stats/sample', {method: 'POST'}); await sleep(50);
@@ -538,6 +690,17 @@ const status = await (await fetch('/api/status')).json();
   root.querySelector('#q').value = 'Hallo';
   root.querySelector('#sf').dispatchEvent(new window.Event('submit', {cancelable: true})); await sleep(400);
   check(root.querySelector('#err').textContent === '', 'Suche: ohne Fehler');
+  // Hervorhebung auf dem Rohtext: „amp“/„39“ zerstören keine Entities (&amp; &#39;)
+  const RAW = "Tom & Jerry's <amp> 39 AMP";
+  fetchHook = u => u.startsWith('/api/search') ? fake({results: [{ts: Date.now() / 1000, kind: 'channel', where: 'Public', direction: 'in', name: 'N', text: RAW}]}) : null;
+  for (const q of ['amp', '39', 'lt', '&']) {
+    root.querySelector('#q').value = q;
+    root.querySelector('#sf').dispatchEvent(new window.Event('submit', {cancelable: true})); await sleep(150);
+    const body = root.querySelector('#res .setrow > div:last-child');
+    const marks = [...body.querySelectorAll('mark')].map(m => m.textContent.toLowerCase());
+    check(body.textContent === RAW && marks.length === (RAW.toLowerCase().includes(q) ? (q === 'amp' ? 2 : 1) : 0) && marks.every(m => m === q.toLowerCase()), `Suche „${q}“: Text unverändert, Treffer markiert (${body.textContent} | ${marks.join(',')})`);
+  }
+  fetchHook = null;
   un();
 }
 

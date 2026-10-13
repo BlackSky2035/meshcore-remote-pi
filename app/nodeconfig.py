@@ -97,7 +97,13 @@ def validate(changes: dict, max_tx: int | None = None) -> tuple[dict, list[str]]
                 raw = raw.strip().lower() in ("1", "true", "ja", "on")
             out[key] = bool(raw)
         elif kind == "choice":
-            val = float(raw) if isinstance(spec["choices"][0], float) else _num({**spec, "min": min(spec["choices"]), "max": max(spec["choices"])}, raw, True)
+            if isinstance(spec["choices"][0], float):
+                try:
+                    val = float(str(raw).strip().replace(",", "."))
+                except (TypeError, ValueError):
+                    raise ConfigError(f"{spec['label']}: „{raw}“ ist keine Zahl")
+            else:
+                val = _num({**spec, "min": min(spec["choices"]), "max": max(spec["choices"])}, raw, True)
             if val not in spec["choices"]:
                 raise ConfigError(f"{spec['label']}: erlaubt sind {', '.join(str(c) for c in spec['choices'])}")
             out[key] = val
@@ -141,7 +147,10 @@ class NodeConfig:
     async def apply(self, changes: dict, confirm: bool = False) -> dict:
         cur = await self.node.node_settings()
         clean, risks = validate(changes, cur.get("max_tx_power"))
-        clean = {k: v for k, v in clean.items() if _differs(cur.get(k), v)} or {}
+        full = clean
+        clean = {k: v for k, v in full.items() if _differs(cur.get(k), v)} or {}
+        if "lat" in clean or "lon" in clean:            # der Node schreibt den Standort nur als Paar: unveränderten Wert mitgeben
+            clean["lat"], clean["lon"] = full["lat"], full["lon"]
         if not clean:
             raise ConfigError("Nichts zu ändern: die Werte sind schon so eingestellt.")
         risks = [r for r in risks if r]

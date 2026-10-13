@@ -5,7 +5,8 @@ So funktioniert es: Bekannte Kontakte (Clients) schreiben dem eigenen Node Direk
   /verlauf [n] die letzten n (1–5)     /anmelden  neue Beiträge automatisch zugestellt bekommen    /abmelden   /hilfe
 Alle Beiträge liegen unbegrenzt in der Datenbank (max_posts, Standard 5000) und sind auf der Webseite lesbar.
 Grenzen (bewusst): Jede Antwort ist eine Funknachricht und zählt zum Sendebudget der Automatik (Stundenlimit, Mindestabstand); je Beitrag höchstens
-100 Zeichen; unbekannte Absender werden ignoriert; je Mitglied höchstens 20 Beiträge pro Stunde und 20 s Pause. Antworten tragen das Präfix „[auto] “,
+100 Zeichen; unbekannte Absender werden ignoriert; je Mitglied höchstens 20 Beiträge pro Stunde und 20 s Pause zwischen zwei Befehlen (jeder Befehl,
+nicht nur /p; Befehle in der Pause werden still ignoriert). Bei pausierter Automatik schweigt auch der Raum. Antworten tragen das Präfix „[auto] “,
 damit sich zwei solche Bots (z. B. auf beiden Pis) nie gegenseitig antworten. In der MeshCore-App erscheint der Node als normaler Kontakt, nicht als Room.
 An echter Hardware nicht getestet.
 """
@@ -18,7 +19,7 @@ import time
 from collections import defaultdict, deque
 from typing import Awaitable, Callable
 
-from .automation import AUTO_PREFIX, SendBudget, mention_tag
+from .automation import AUTO_PREFIX, SendBudget, cut_bytes, mention_tag
 from .node.base import BaseNode, NodeError
 
 log = logging.getLogger("meshcore-remote")
@@ -33,6 +34,9 @@ POSTS_PER_HOUR = 20
 DELIVER_EVERY_S = 20.0
 DELIVER_PER_CYCLE = 3
 MAX_TRIES = 3                # erfolglose Zustellversuche (je Durchlauf) je Beitrag und Empfänger
+CONFIRM_TX_MAX = 3           # send_message(confirm=True) sendet bis zu 3 Mal (RealNode: send_msg_with_retry, max_attempts=3): so viele Plätze im Sendebudget
+BACKOFF_MIN_S = 60.0         # nach einer unbestätigten Zustellung: Wartezeit für dieses Mitglied, verdoppelt sich bis BACKOFF_MAX_S, bei Erfolg zurück
+BACKOFF_MAX_S = 1800.0
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
 HELP = "Befehle: /p Text (schreiben), /neu, /verlauf [1-5], /anmelden, /abmelden"
 LINE_MAX = 150      # so lang darf eine Nachricht an die MeshCore-App höchstens sein (Zähler dort: 150), gemessen in BYTES (Umlaute/Emojis zählen mehr);
@@ -49,10 +53,7 @@ def _blen(text: str) -> int:
 
 def cut_to_bytes(text: str, limit: int = LINE_MAX, mark: str = "...") -> str:
     """Kürzt `text` auf höchstens `limit` Byte (UTF-8), ohne ein Zeichen zu zerreißen, und hängt `mark` an. Kürzer bleibt unverändert."""
-    if _blen(text) <= limit:
-        return text
-    cut = text.encode("utf-8")[: max(0, limit - len(mark))].decode("utf-8", "ignore")
-    return cut.rstrip() + mark
+    return cut_bytes(text, limit, mark)
 
 
 def clean_text(text: str) -> str:
@@ -68,13 +69,17 @@ def clean_text(text: str) -> str:
 
 class Room:
     def __init__(self, node: BaseNode, store, budget: SendBudget, log_line: Callable[[str, str], Awaitable[None]],
-                 emit: Callable[[dict], Awaitable[None]], clock: Callable[[], float] = time.monotonic):
+                 emit: Callable[[dict], Awaitable[None]], clock: Callable[[], float] = time.monotonic,
+                 paused: Callable[[], bool] | None = None):
         self.node, self.store, self.budget, self._log, self.emit, self._clock = node, store, budget, log_line, emit, clock
+        self._paused = paused or (lambda: False)        # globaler Pausenschalter der Automatik: dann sendet auch der Raum nichts
         self._last_post: dict[str, float] = {}
+        self._last_cmd: dict[str, float] = {}           # je Mitglied: letzter beantworteter Befehl (Pause COOLDOWN_S für ALLE Befehle)
+        self._backoff_s: dict[str, float] = {}          # je Mitglied: aktuelle Wartezeit nach unbestätigter Zustellung
+        self._backoff_until: dict[str, float] = {}
         self._hourly: dict[str, deque] = defaultdict(deque)
         self._tries: dict[tuple[str, int], int] = {}
         self._locks: dict[str, asyncio.Lock] = {}   # je Mitglied: /neu, /verlauf und automatische Zustellung nie gleichzeitig
-        self._unacked = False          # letzter _say: gesendet, aber nicht bestätigt
 
     # ---- Einstellungen ---------------------------------------------------------
     async def config(self) -> dict:
@@ -93,24 +98,37 @@ class Room:
     def _line(self, text: str) -> str:
         return cut_to_bytes(AUTO_PREFIX + text)                      # nie länger als LINE_MAX: der Node soll nie eine zu lange Nachricht bekommen
 
-    async def _say(self, key: str, name: str, text: str, confirm: bool = False) -> bool:
-        """True = gesendet (bei `confirm` zusätzlich vom Empfänger bestätigt). Sonst False, Grund steht im Protokoll."""
-        if not await self.budget.acquire():
+    async def _say(self, key: str, name: str, text: str, confirm: bool = False) -> str:
+        """Status: "ok" = gesendet (bei `confirm` zusätzlich vom Empfänger bestätigt), "unacked" = gesendet, aber nicht bestätigt,
+        "error" = nicht gesendet (Pause, Stundenlimit, Node-Fehler; Grund steht im Protokoll). Rückgabe je Aufruf, kein gemeinsamer Zustand:
+        parallele Aufrufe (verschiedene Mitglieder) dürfen sich nicht gegenseitig das Ergebnis überschreiben.
+        Bestätigtes Senden kann bis zu CONFIRM_TX_MAX Funkpakete kosten und verbucht darum so viele Plätze im Sendebudget."""
+        if self._paused():
+            return "error"
+        if not await self.budget.acquire(CONFIRM_TX_MAX if confirm else 1):
             await self._log("warn", f"Raum: Antwort an {name} übersprungen (Stundenlimit erreicht)")
-            return False
+            return "error"
         line = self._line(text)
-        self._unacked = False
         try:
             res = await self.node.send_message(key, line, confirm=True) if confirm else await self.node.send_message(key, line)
             await self.store.add_message("out", "direct", key, line, name=name, auto=True)
             if confirm and not (res or {}).get("acked", True):
-                self._unacked = True
                 await self._log("warn", f"Raum: keine Empfangsbestätigung von {name}")
-                return False
-            return True
+                return "unacked"
+            return "ok"
         except NodeError as e:
             await self._log("error", f"Raum: Senden an {name} fehlgeschlagen: {e}")
-            return False
+            return "error"
+
+    def _note_unacked(self, key: str) -> None:
+        """Unbestätigt: dieses Mitglied erst nach einer Wartezeit wieder automatisch beliefern (60 s, verdoppelt bis 30 min)."""
+        wait = min(max(BACKOFF_MIN_S, self._backoff_s.get(key, 0.0) * 2), BACKOFF_MAX_S)
+        self._backoff_s[key] = wait
+        self._backoff_until[key] = self._clock() + wait
+
+    def _note_acked(self, key: str) -> None:
+        self._backoff_s.pop(key, None)
+        self._backoff_until.pop(key, None)
 
     @staticmethod
     def render(post: dict, title: str, now: float | None = None) -> str:
@@ -140,6 +158,8 @@ class Room:
         """Nur Direktnachrichten, die mit „/“ beginnen, von bekannten Clients. Wirft nie nach außen (der Aufrufer fängt zusätzlich ab)."""
         if payload.get("txt_type", 0) != 0 or contact is None or contact.get("type_name") != "client" or not self.node.connected:
             return
+        if self._paused():
+            return                                           # Automatik pausiert: keine Antwort, Befehl wird nicht ausgeführt
         text = (payload.get("text") or "").strip()
         if not text.startswith("/") or text.startswith(AUTO_PREFIX.strip()):
             return
@@ -147,6 +167,11 @@ class Room:
         if not cfg["enabled"]:
             return
         key, name = contact["public_key"], contact["name"]
+        now = self._clock()
+        if now - self._last_cmd.get(key, float("-inf")) < COOLDOWN_S:
+            log.info("Raum: Befehl von %s ignoriert (Pause zwischen Befehlen)", name)
+            return                                           # still: auch ein Hinweis wäre eine Funknachricht
+        self._last_cmd[key] = now
         cmd, _, arg = text[1:].partition(" ")
         cmd, arg = cmd.lower(), arg.strip()
         member = await self.store.room_member(key, name)
@@ -164,8 +189,9 @@ class Room:
                     await self._say(key, name, f"{cfg['title']}: keine neuen Beiträge")
                     return
                 for p in posts:
-                    if not await self._say(key, name, self.render(p, cfg['title']), confirm=True):
+                    if await self._say(key, name, self.render(p, cfg['title']), confirm=True) != "ok":
                         break                                # nicht bestätigt: bleibt ungelesen, /neu holt es erneut
+                    self._note_acked(key)
                     await self.store.room_update_member(key, last_seen_id=p["id"])
                 else:
                     if more:
@@ -177,8 +203,9 @@ class Room:
                 if not posts:
                     await self._say(key, name, f"{cfg['title']}: noch keine Beiträge")
                 for p in posts:
-                    if not await self._say(key, name, self.render(p, cfg['title']), confirm=True):
+                    if await self._say(key, name, self.render(p, cfg['title']), confirm=True) != "ok":
                         break
+                    self._note_acked(key)
                     await self.store.room_update_member(key, last_seen_id=p["id"])
         elif cmd == "anmelden":
             subs = [m for m in await self.store.room_members() if m["subscribed"] and m["public_key"] != key]
@@ -225,45 +252,57 @@ class Room:
 
     # ---- Zustellung an Angemeldete ---------------------------------------------------------
     async def deliver_once(self) -> int:
-        """Schickt Angemeldeten ihren nächsten Beitrag (höchstens DELIVER_PER_CYCLE Sendungen je Durchlauf). Gibt die Zahl gesendeter Nachrichten zurück."""
+        """Schickt Angemeldeten ihren nächsten Beitrag (höchstens DELIVER_PER_CYCLE Sendungen je Durchlauf, für alle Mitglieder zusammen, auch
+        unbestätigte zählen). Mitglieder in der Wartezeit nach einer unbestätigten Zustellung werden übersprungen. Gibt die Zahl der zugestellten
+        (bestätigten bzw. nach MAX_TRIES übersprungenen) Beiträge zurück."""
         cfg = await self.config()
-        if not cfg["enabled"] or not self.node.connected:
+        if not cfg["enabled"] or not self.node.connected or self._paused():
             return 0
-        sent = 0
+        sent = tx = 0
         for m0 in await self.store.room_members():
-            if not m0["subscribed"] or sent >= DELIVER_PER_CYCLE:
+            if not m0["subscribed"] or tx >= DELIVER_PER_CYCLE:
                 continue
+            if self._backoff_until.get(m0["public_key"], float("-inf")) > self._clock():
+                continue                                  # zuletzt nicht erreichbar: noch warten
             async with self._lock(m0["public_key"]):
                 m = next((x for x in await self.store.room_members() if x["public_key"] == m0["public_key"]), None)    # frischer Stand nach dem Warten
                 if m is None or not m["subscribed"]:
                     continue
-                ok, n = await self._deliver_member(m, cfg)
-            sent += n
-            if not ok:
-                return sent                               # Budget leer oder Fehler: später weiter
+                status, n, t = await self._deliver_member(m, cfg)
+            sent, tx = sent + n, tx + t
+            if status == "error":
+                return sent                               # Budget leer, Pause oder Node-Fehler: später weiter
+            # "unacked": dieses Mitglied wartet jetzt, die anderen bekommen ihre Beiträge trotzdem
         return sent
 
-    async def _deliver_member(self, m: dict, cfg: dict) -> tuple[bool, int]:
-        """Nächsten ungesehenen fremden Beitrag an ein Mitglied senden (Sperre des Mitglieds wird vom Aufrufer gehalten). -> (weitermachen, gesendet)"""
+    async def _deliver_member(self, m: dict, cfg: dict) -> tuple[str, int, int]:
+        """Nächsten ungesehenen fremden Beitrag an ein Mitglied senden (Sperre des Mitglieds wird vom Aufrufer gehalten).
+        -> (Status "ok" | "unacked" | "error", zugestellt, gesendet)"""
         key = m["public_key"]
         for p in await self.store.room_posts(m["last_seen_id"], 5):
             if p["author_key"] == key:
                 await self.store.room_update_member(key, last_seen_id=p["id"])
                 continue
-            if not await self._say(key, m["name"], self.render(p, cfg['title']), confirm=True):
-                # Budget leer, Fehler oder keine Bestätigung: der Beitrag bleibt ungesehen und kommt im nächsten Durchlauf erneut.
-                # Nach MAX_TRIES erfolglosen Durchläufen wird er übersprungen, damit ein dauerhaft unerreichbarer Empfänger nichts blockiert.
-                if not self._unacked:                     # Budget/Node-Fehler zählen nicht als Fehlversuch
-                    return False, 0
+            status = await self._say(key, m["name"], self.render(p, cfg['title']), confirm=True)
+            if status == "error":
+                return "error", 0, 0                      # Budget/Pause/Node-Fehler zählen nicht als Fehlversuch
+            if status == "unacked":
+                # Keine Bestätigung: der Beitrag bleibt ungesehen und kommt nach der Wartezeit erneut. Nach MAX_TRIES erfolglosen Durchläufen
+                # wird er übersprungen, damit ein dauerhaft unerreichbarer Empfänger nichts blockiert.
+                self._note_unacked(key)
                 k = (key, p["id"])
                 self._tries[k] = self._tries.get(k, 0) + 1
                 if self._tries[k] < MAX_TRIES:
-                    return False, 0
+                    return "unacked", 0, 1
                 await self._log("warn", f"Raum: Beitrag {p['id']} an {m['name']} nach {MAX_TRIES} Versuchen übersprungen")
+                self._tries.pop(k, None)
+                await self.store.room_update_member(key, last_seen_id=p["id"])
+                return "unacked", 1, 1
+            self._note_acked(key)
             self._tries.pop((key, p["id"]), None)
             await self.store.room_update_member(key, last_seen_id=p["id"])
-            return True, 1
-        return True, 0
+            return "ok", 1, 1
+        return "ok", 0, 0
 
     async def run(self) -> None:
         while True:

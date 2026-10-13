@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Callable
+from typing import Any, Awaitable, Callable
 
 from .node.base import BaseNode, NodeError
 
@@ -50,8 +50,10 @@ def derive(rows: list[dict]) -> list[dict]:
 
 
 class StatsSampler:
-    def __init__(self, node: BaseNode, store, every_s: float = SAMPLE_EVERY_S, clock: Callable[[], float] = time.time):
+    def __init__(self, node: BaseNode, store, every_s: float = SAMPLE_EVERY_S, clock: Callable[[], float] = time.time,
+                 sleep: Callable[[float], Awaitable[Any]] | None = None):
         self.node, self.store, self.every_s, self._clock = node, store, every_s, clock
+        self._sleep = sleep or (lambda s: asyncio.sleep(s))      # erst beim Aufruf nachschlagen (Tests ersetzen asyncio.sleep)
         self.last_error: str | None = None
         self.enabled = True
 
@@ -79,9 +81,12 @@ class StatsSampler:
         return None
 
     async def run(self) -> None:
-        self.enabled = bool(await self.store.get_setting("radio_stats_enabled", True))
-        await asyncio.sleep(30)
+        try:                                   # Datenbankfehler darf die Aufgabe nicht still beenden: dann gilt der Standard (an)
+            self.enabled = bool(await self.store.get_setting("radio_stats_enabled", True))
+        except Exception:
+            log.exception("Funkstatistik: Einstellung nicht lesbar, Standard „an“")
+        await self._sleep(30)
         while True:
             if self.enabled:
-                await self.sample()
-            await asyncio.sleep(self.every_s)
+                await self.sample()            # wirft nie
+            await self._sleep(self.every_s)

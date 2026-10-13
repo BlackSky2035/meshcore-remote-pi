@@ -20,6 +20,10 @@ def adm(rt, tmp_path):
     a._clock = clock
     a.vault = R.PasswordVault(tmp_path / "secrets.json")
     a.tick = lambda s=3: clock.advance(s)
+
+    async def fake_sleep(s):
+        clock.advance(s)                                              # Wartezeit des Tempolimits ohne echtes Warten
+    a._sleep = fake_sleep
     return a
 
 
@@ -132,6 +136,7 @@ async def test_neighbours_and_acl_resolve_names(adm):
     await adm.login(REPEATER_OK, "sim")
     n = await adm.neighbours(REPEATER_OK)
     assert n["neighbours"][0]["name"] == "Alice (Sim)"
+    adm.tick()                                                        # Tempolimit gilt auch für Nachbarn/Zugriffsliste
     a = await adm.acl(REPEATER_OK)
     assert a["entries"][0]["perm_label"] == "Admin" and a["entries"][1]["perm_label"] == "Gast"
 
@@ -259,3 +264,51 @@ async def test_real_node_does_not_forward_repeater_replies_to_chat():
     await n._forward(ev(1))
     await n._forward(ev(0))
     assert len(got) == 1 and got[0]["payload"]["txt_type"] == 0
+
+
+# ---- Nachträge: „set repeat on“ exakt, Gast-Passwort lesen, Tempolimit auf allen Funkwegen ----------------
+@pytest.mark.parametrize("cmd", ["set repeat offon", "set repeat off on", "set repeat xon", "set repeat on off"])
+def test_only_exact_set_repeat_on_is_harmless(cmd):
+    assert R.classify(cmd)["risky"]
+
+
+def test_set_repeat_on_with_extra_spaces_is_harmless():
+    assert R.classify("  SET   repeat   on ")["risky"] is None
+
+
+async def test_reading_guest_password_is_redacted(adm, rt):
+    rt.node.rep_cfg[REPEATER_OK]["guest.password"] = "Gast4711"
+    await adm.login(REPEATER_OK, "sim")
+    r = await adm.command(REPEATER_OK, "get guest.password")
+    assert "Gast4711" not in json.dumps(r) and "Gast4711" not in json.dumps(adm.history(REPEATER_OK))
+    assert "Gast4711" not in json.dumps(await rt.store.log(50))
+
+
+async def test_rate_limit_applies_to_login_neighbours_and_acl(adm):
+    await adm.login(REPEATER_OK, "sim")
+    adm.tick()
+    await adm.command(REPEATER_OK, "ver")
+    for call in (lambda: adm.neighbours(REPEATER_OK), lambda: adm.acl(REPEATER_OK), lambda: adm.login(REPEATER_OK, "sim")):
+        with pytest.raises(R.RepeaterError, match="Zu schnell"):
+            await call()
+    adm.tick()
+    assert (await adm.neighbours(REPEATER_OK))["total"] == 2
+
+
+async def test_auto_relogin_waits_before_sending_the_command(adm, rt):
+    await adm.login(REPEATER_OK, "sim")
+    adm.tick()
+    adm._sessions.clear()                                             # Sitzung weg, Passwort im Speicher
+    sends = []
+    orig_login, orig_cmd = rt.node.repeater_login, rt.node.repeater_command
+
+    async def login(*a, **k):
+        sends.append(("login", adm._clock()))
+        return await orig_login(*a, **k)
+
+    async def cmd(*a, **k):
+        sends.append(("cmd", adm._clock()))
+        return await orig_cmd(*a, **k)
+    rt.node.repeater_login, rt.node.repeater_command = login, cmd
+    assert (await adm.command(REPEATER_OK, "ver"))["ok"]
+    assert [k for k, _ in sends] == ["login", "cmd"] and sends[1][1] - sends[0][1] >= R.MIN_GAP_S

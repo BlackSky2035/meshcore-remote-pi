@@ -30,8 +30,10 @@ async def test_post_new_history_and_prefix(rt, room):
     await say(rt, BOB, "/neu")
     assert any("@[Alice (Sim)] Hallo zusammen" in t for t in texts(rt, BOB))                    # Autor als echte Erwähnung
     assert any(f"[1 {__import__('time').strftime('%H:%M')}]" in t for t in texts(rt, BOB))      # Uhrzeit, zu der der Beitrag ankam
+    room.tick(R.COOLDOWN_S)                                      # 20 s Pause zwischen Befehlen je Mitglied
     await say(rt, BOB, "/neu")                                   # nichts Neues mehr
     assert "keine neuen" in texts(rt, BOB)[-1]
+    room.tick(R.COOLDOWN_S)
     await say(rt, BOB, "/verlauf 5")
     assert "Hallo zusammen" in texts(rt, BOB)[-1]
 
@@ -53,11 +55,14 @@ async def test_loop_protection_for_auto_prefix(rt, room):
 async def test_post_validation_cooldown_and_hourly_limit(rt, room):
     await say(rt, ALICE, "/p " + "x" * 141)
     assert "zu lang" in texts(rt, ALICE)[-1] and await rt.store.room_posts() == []
+    room.tick(R.COOLDOWN_S)
     await say(rt, ALICE, "/p")
     assert "leer" in texts(rt, ALICE)[-1]
+    room.tick(R.COOLDOWN_S)
     await say(rt, ALICE, "/p eins")
+    n = len(texts(rt, ALICE))
     await say(rt, ALICE, "/p zwei")
-    assert "kurz warten" in texts(rt, ALICE)[-1] and len(await rt.store.room_posts()) == 1
+    assert len(texts(rt, ALICE)) == n and len(await rt.store.room_posts()) == 1    # in der Pause: still ignoriert (keine Funkantwort)
     for i in range(R.POSTS_PER_HOUR):
         room.tick(25)
         await say(rt, ALICE, f"/p nr {i}")
@@ -71,6 +76,7 @@ async def test_max_three_per_request_and_hint(rt, room):
     await say(rt, BOB, "/neu")
     out = texts(rt, BOB)
     assert len(out) == 4 and "weitere" in out[-1] and "b0" in out[0] and "b2" in out[2]
+    room.tick(R.COOLDOWN_S)
     await say(rt, BOB, "/neu")
     assert "b3" in texts(rt, BOB)[4]
 
@@ -85,6 +91,7 @@ async def test_subscribe_delivery_and_limits(rt, room):
     assert len(got) == 2
     assert await room.deliver_once() == 0                        # nichts mehr offen
     assert not any("Neuigkeit" in t for t in texts(rt, ALICE)[1:])  # Autor bekommt den eigenen Beitrag nicht
+    room.tick(R.COOLDOWN_S)
     await say(rt, BOB, "/abmelden")
     await room.post_from_web("noch einer")
     assert await room.deliver_once() == 0
@@ -292,6 +299,7 @@ async def test_unacked_delivery_stays_unseen_and_is_retried(rt, room):
     member = [m for m in await rt.store.room_members() if m["public_key"] == BOB][0]
     assert member["last_seen_id"] < 1                                # nicht als gesehen markiert
     rt.node.no_ack = False
+    room.tick(R.BACKOFF_MIN_S)                                       # Wartezeit nach dem Fehlschlag
     assert await room.deliver_once() == 1                            # nächster Durchlauf klappt
     member = [m for m in await rt.store.room_members() if m["public_key"] == BOB][0]
     assert member["last_seen_id"] == 1
@@ -302,6 +310,7 @@ async def test_permanently_unreachable_member_does_not_block_forever(rt, room):
     rt.node.no_ack = True
     for _ in range(R.MAX_TRIES):
         await room.deliver_once()
+        room.tick(R.BACKOFF_MAX_S)                                   # Wartezeit nach jedem Fehlschlag
     member = [m for m in await rt.store.room_members() if m["public_key"] == BOB][0]
     assert member["last_seen_id"] == 1                               # nach MAX_TRIES übersprungen
 
@@ -312,6 +321,7 @@ async def test_neu_does_not_mark_unacked_posts_as_seen(rt, room):
     await say(rt, BOB, "/neu")
     rt.node.no_ack = False
     rt.node.sent.clear()
+    room.tick(R.COOLDOWN_S)
     await say(rt, BOB, "/neu")
     assert any("Hallo" in t for t in texts(rt, BOB))                 # kommt beim zweiten /neu erneut
 
@@ -324,6 +334,157 @@ async def test_neu_and_automatic_delivery_never_send_the_same_post_twice(rt, roo
     for i in range(3):
         await room.post_from_web(f"Beitrag {i}")
     rt.node.sent.clear()
+    room.tick(R.COOLDOWN_S)
     await asyncio.gather(room.deliver_once(), say(rt, BOB, "/neu"), room.deliver_once())
     bodies = [t for t in texts(rt, BOB) if "Beitrag" in t]
     assert len(bodies) == len(set(bodies)) == 3
+
+
+# ---- Korrekturen: Budget je Sendeversuch, Wartezeit nach Fehlschlag, Pause, Befehlspause, Status je Senden ----------------------
+def member_of(members, key):
+    return next(m for m in members if m["public_key"] == key)
+
+
+async def test_confirmed_send_reserves_one_budget_slot_per_possible_transmission(rt, room):
+    """send_message(confirm=True) sendet bis zu CONFIRM_TX_MAX Mal (RealNode: send_msg_with_retry): so viele Plätze im Sendebudget."""
+    assert R.CONFIRM_TX_MAX == 3
+    await say(rt, BOB, "/anmelden")
+    await room.post_from_web("Hallo")
+    used = room.budget.stats()["used_last_hour"]
+    assert await room.deliver_once() == 1
+    assert room.budget.stats()["used_last_hour"] - used == R.CONFIRM_TX_MAX
+
+
+async def test_confirmed_send_needs_all_slots(rt, room):
+    rt.room.budget = SendBudget(0, 3)
+    await say(rt, BOB, "/anmelden")                                    # 1 Platz
+    await room.post_from_web("Hallo")
+    rt.node.sent.clear()
+    assert await room.deliver_once() == 0 and rt.node.sent == []       # 2 frei, 3 nötig: nicht senden
+    assert room.budget.stats()["used_last_hour"] == 1
+
+
+async def test_unreachable_member_gets_growing_backoff_and_reset_on_success(rt, room):
+    await _subscribed_bob_with_web_post(rt, room)
+    rt.node.no_ack = True
+    await room.deliver_once()
+    assert len(rt.node.sent) == 1
+    await room.deliver_once()
+    assert len(rt.node.sent) == 1                                      # Wartezeit: nicht alle 20 s erneut
+    room.tick(R.BACKOFF_MIN_S + 1)
+    await room.deliver_once()
+    assert len(rt.node.sent) == 2
+    room.tick(R.BACKOFF_MIN_S + 1)
+    await room.deliver_once()
+    assert len(rt.node.sent) == 2                                      # verdoppelt (120 s)
+    room.tick(R.BACKOFF_MIN_S)
+    rt.node.no_ack = False
+    await room.post_from_web("zweiter")
+    assert await room.deliver_once() == 1                              # klappt: Wartezeit zurückgesetzt
+    assert await room.deliver_once() == 1                              # sofort der nächste Beitrag
+
+
+def test_backoff_is_capped():
+    r = R.Room.__new__(R.Room)
+    r._backoff_s, r._backoff_until, r._clock = {}, {}, lambda: 0.0
+    for _ in range(30):
+        r._note_unacked("k")
+    assert r._backoff_s["k"] == R.BACKOFF_MAX_S == 1800
+
+
+async def test_unacked_member_does_not_stop_delivery_to_others(rt, room):
+    await say(rt, BOB, "/anmelden")                                    # Bob zuerst angemeldet: kommt zuerst dran
+    room.tick(30)
+    await say(rt, ALICE, "/anmelden")
+    await room.post_from_web("für alle")
+    orig = rt.node.send_message
+
+    async def send(key, text, confirm=False):
+        res = await orig(key, text, confirm=confirm)
+        return {**res, "acked": False} if confirm and key == BOB else res
+    rt.node.send_message = send
+    rt.node.sent.clear()
+    assert await room.deliver_once() == 1
+    assert [k for k, _ in rt.node.sent] == [BOB, ALICE]
+    assert member_of(await rt.store.room_members(), ALICE)["last_seen_id"] == 1
+    assert member_of(await rt.store.room_members(), BOB)["last_seen_id"] == 0
+
+
+async def test_permanently_unreachable_member_still_skips_after_max_tries(rt, room):
+    await _subscribed_bob_with_web_post(rt, room)
+    rt.node.no_ack = True
+    for _ in range(R.MAX_TRIES):
+        await room.deliver_once()
+        room.tick(R.BACKOFF_MAX_S)
+    assert member_of(await rt.store.room_members(), BOB)["last_seen_id"] == 1
+    assert len(rt.node.sent) == R.MAX_TRIES
+
+
+async def test_room_is_silent_while_automation_is_paused(rt, room):
+    await say(rt, BOB, "/anmelden")
+    await room.post_from_web("wartet")
+    await rt.automation.set_paused(True)
+    rt.node.sent.clear()
+    room.tick(30)
+    await say(rt, BOB, "/hilfe")
+    await say(rt, ALICE, "/p in der Pause")
+    assert await room.deliver_once() == 0
+    assert rt.node.sent == [] and len(await rt.store.room_posts()) == 1     # Befehle in der Pause: ignoriert, keine Antwort
+    await rt.automation.set_paused(False)
+    assert await room.deliver_once() == 1
+
+
+async def test_every_command_has_a_cooldown_per_member(rt, room):
+    for _ in range(5):
+        await say(rt, BOB, "/hilfe")
+        await say(rt, BOB, "/verlauf")
+        await say(rt, BOB, "/neu")
+    assert len(texts(rt, BOB)) == 1                                    # nur der erste Befehl bekommt eine Antwort
+    await say(rt, ALICE, "/hilfe")
+    assert len(texts(rt, ALICE)) == 1                                  # Pause gilt je Mitglied
+    room.tick(R.COOLDOWN_S)
+    await say(rt, BOB, "/hilfe")
+    assert len(texts(rt, BOB)) == 2
+
+
+async def test_say_returns_status_per_call_even_in_parallel(rt, room):
+    """Früher setzte jedes _say ein gemeinsames Merkmal `_unacked`: parallele Aufrufe überschrieben es gegenseitig."""
+    import asyncio
+    orig = rt.node.send_message
+
+    async def send(key, text, confirm=False):
+        await asyncio.sleep(0.02 if key == BOB else 0)
+        res = await orig(key, text, confirm=confirm)
+        return {**res, "acked": key != BOB}
+    rt.node.send_message = send
+    a, b = await asyncio.gather(room._say(BOB, "Bob", "x", confirm=True), room._say(ALICE, "Alice", "y", confirm=True))
+    assert (a, b) == ("unacked", "ok") and not hasattr(room, "_unacked")
+    rt.room.budget = SendBudget(0, 0)
+    assert await room._say(BOB, "Bob", "z") == "error"
+
+
+def test_room_member_first_contact_is_atomic():
+    """Zwei gleichzeitige erste Nachrichten desselben Mitglieds: früher IntegrityError (beide lasen „gibt es nicht“ und fügten ein)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from app.storage import Storage
+    s = Storage(":memory:")
+    orig = s._all
+    barrier = threading.Barrier(2, timeout=5)
+
+    def slow(sql, params=()):
+        rows = orig(sql, params)
+        if "FROM room_members WHERE public_key" in sql:      # beide haben gelesen, bevor einer schreibt
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+        return rows
+    s._all = slow
+    with ThreadPoolExecutor(2) as ex:
+        res = list(ex.map(lambda _: s.room_member(ALICE, "Alice"), range(2)))
+    assert [r["public_key"] for r in res] == [ALICE, ALICE]
+    s._all = orig
+    assert len(s.room_members()) == 1
+    assert s.room_member(ALICE, "Alice2")["name"] == "Alice2"
+    s.close()

@@ -165,8 +165,9 @@ export async function mount(root, ctx) {
     chatKey = c.public_key;
     $('chatCard').hidden = false;
     $('chatTitle').textContent = `Nachrichten mit ${c.name}`;
-    const msgs = await get(`/api/messages?peer=${c.public_key.slice(0, 12)}&limit=100`);
-    if (!alive) return;
+    const key = c.public_key;
+    const msgs = await get(`/api/messages?peer=${key.slice(0, 12)}&limit=100`);
+    if (!alive || chatKey !== key) return;             // inzwischen anderer Chat offen (oder geschlossen): alte Antwort verwerfen
     $('chat').innerHTML = msgs.map(bubble).join('') || '<p class="muted">Noch keine Nachrichten.</p>';
     $('chat').scrollTop = $('chat').scrollHeight;
     $('chatText').focus();
@@ -183,9 +184,11 @@ export async function mount(root, ctx) {
   $('chatText').oninput = updateChatCount;
   updateChatCount();
 
+  let sending = false;                                 // Senden läuft: Enter löst kein zweites Funkpaket aus
   async function sendChat() {
     const text = $('chatText').value.trim();
-    if (!chatKey || !text) return;
+    if (sending || !chatKey || !text) return;
+    sending = true;
     $('chatSend').disabled = true;
     try {
       await post('/api/message', {to: chatKey, text});
@@ -195,16 +198,16 @@ export async function mount(root, ctx) {
       const c = contacts.find(x => x.public_key === chatKey);
       if (c) await openChat(c);
     } catch (e) { if (alive) $('error').textContent = e.message; }
-    finally { if (alive) $('chatSend').disabled = false; }
+    finally { sending = false; if (alive) $('chatSend').disabled = false; }
   }
   $('chatSend').onclick = sendChat;
-  $('chatText').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
+  $('chatText').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) sendChat(); };     // Enter während der Wortwahl (IME) sendet nicht
 
   await load();
   const offs = [
     ctx.on('contact_message', ev => {
       const c = contacts.find(x => x.public_key === chatKey);
-      if (c && (ev.payload.pubkey_prefix || '') === chatKey.slice(0, 12)) setTimeout(() => openChat(c), 300);
+      if (c && (ev.payload.pubkey_prefix || '') === chatKey.slice(0, 12)) setTimeout(() => openChat(c).catch(() => {}), 300);
     }),
     ctx.on('new_contact', load),
     ctx.on('advertisement', debounce(load, 1000)),

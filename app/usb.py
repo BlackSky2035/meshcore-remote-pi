@@ -94,6 +94,28 @@ def resolve_port(configured: str, ports: list[dict]) -> str:
     return found[0]["device"]
 
 
+def _real(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except Exception:
+        return path
+
+
+def port_present(port: str, ports: list[dict]) -> bool:
+    """Ist der genutzte Anschluss noch da? Vergleicht aufgelöste Pfade (`/dev/serial/by-id/…` ist ein Symlink auf
+    `/dev/ttyACM0`) und zählt eine noch vorhandene Gerätedatei als „da“ (die Port-Liste kann leer sein, wenn ihre
+    Abfrage scheiterte). Wirft nie."""
+    try:
+        if any(p.get("device") == port for p in ports):
+            return True
+        want = _real(port)
+        if any(_real(str(p.get("device") or "")) == want for p in ports):
+            return True
+        return os.path.exists(port)
+    except Exception:
+        return True                                     # im Zweifel nicht trennen; der Herzschlag sichert ab
+
+
 def port_access_problem(device: str) -> str | None:
     """Gibt einen Hinweis zurück, wenn der Anschluss existiert, aber nicht les-/schreibbar ist (Linux; macOS ungetestet)."""
     if not sys.platform.startswith(("linux", "darwin")):
