@@ -556,11 +556,23 @@ const status = await (await fetch('/api/status')).json();
     check(root.querySelector('#poll').disabled === false && root.querySelector('#poll').textContent === 'Jetzt abfragen', 'Jetzt abfragen: Knopf danach wieder frei');
     const names = [...root.querySelectorAll('#chBat svg text')].map(t => t.textContent);
     check(names.some(t => t.includes('Hügel')) && names.some(t => t.includes('Dach')), 'Akku-Diagramm: Legende nennt beide Repeater');
+    // Tabelle: je Repeater ein Reiter, Umschalten zeigt den anderen Repeater (und die CSV gehört zum gewählten)
+    click(root.querySelector('#views button[data-view="table"]')); await sleep(200);
+    const tabs = [...root.querySelectorAll('#tableTabs button[data-tab]')];
+    check(tabs.length === 2 && tabs[0].classList.contains('on'), `Akku-Tabelle: zwei Reiter, der erste ist gewählt (${tabs.length})`);
+    const firstFor = root.querySelector('#tableFor').textContent;
+    click(tabs[1]); await sleep(150);
+    check(root.querySelector('#tableFor').textContent !== firstFor && root.querySelector('#tableTabs button[data-tab].on') === root.querySelectorAll('#tableTabs button[data-tab]')[1],
+      `Akku-Tabelle: zweiter Reiter zeigt den anderen Repeater (${root.querySelector('#tableFor').textContent})`);
+    check(root.querySelector('#csv').href.includes(REP2), 'Akku-Tabelle: CSV gehört zum gewählten Reiter');
+    click(root.querySelector('#views button[data-view="chart"]')); await sleep(200);
     // Jeder Repeater hat in Akku- und Temperatur-Diagramm dieselbe Linienform, die Repeater untereinander verschiedene.
-    const forms = id => [...root.querySelectorAll(`#${id} path.lc-line, #${id} path[stroke-dasharray]`)].map(p => p.getAttribute('stroke-dasharray') || 'solid');
-    const fb = new Set(forms('chBat')), ft = new Set(forms('chTemp'));
-    check(fb.has('solid') && fb.has('7 4'), `Akku-Diagramm: beide Repeater mit verschiedener Linienart (${[...fb].join(', ')})`);
-    check([...ft].every(x => fb.has(x)), `Temperatur-Diagramm: gleiche Linienarten wie im Akku-Diagramm (${[...ft].join(', ')})`);
+    // Alle Linien durchgezogen; je Repeater eine eigene Farbe, in Akku- und Temperatur-Diagramm gleich
+    const strokes = id => [...root.querySelectorAll(`#${id} path.lc-line`)].map(p => p.getAttribute('style'));
+    const dashed = id => root.querySelectorAll(`#${id} path[stroke-dasharray], #${id} line[stroke-dasharray]`).length;
+    const fb = new Set(strokes('chBat')), ft = new Set(strokes('chTemp'));
+    check(dashed('chBat') === 0 && dashed('chTemp') === 0, 'Akku-/Temperatur-Diagramm: alle Linien durchgezogen');
+    check(fb.size >= 2 && [...ft].every(x => fb.has(x)), `Diagramme: verschiedene Farben je Repeater, in beiden Diagrammen gleich (${[...fb].join(' | ')})`);
   }
   un();
   await fetch('/api/battery/selection', {method: 'PUT', headers: {'content-type': 'application/json'}, body: '{"keys": []}'});

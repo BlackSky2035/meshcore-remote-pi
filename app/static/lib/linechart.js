@@ -128,7 +128,10 @@ export function lineChart(host, points, opts) {
       const attrs = {d, class: 'lc-line', style: `stroke: var(${cVar})`};
       if (dash) attrs['stroke-dasharray'] = dash;
       svg.append(el('path', attrs));
-      if (pts.length <= 80) for (const p of pts) svg.append(marker(shape, sx(p.x), sy(p.y), cVar));
+      // Punkte nur, wenn sie auf dem Bildschirm genug Abstand haben (im Mittel ≥ 10 px); sonst reicht die Linie –
+      // dicht liegende Messungen würden zu einer Perlenkette. Einzelne Messwerte (1–2 Punkte) brauchen den Punkt immer.
+      const span = Math.abs(sx(pts[pts.length - 1].x) - sx(pts[0].x));
+      if (pts.length <= 2 || span / (pts.length - 1) >= 10) for (const p of pts) svg.append(marker(shape, sx(p.x), sy(p.y), cVar));
     };
     drawSeries(points, colorVar, opts.dash, opts.shape);
     for (const s of extraSeries) drawSeries(s.points, s.colorVar, s.dash, s.shape);

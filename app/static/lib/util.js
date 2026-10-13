@@ -11,7 +11,8 @@ export function ago(ts) {
   if (s < 90) return 'gerade eben';
   if (s < 3600) return `vor ${Math.round(s / 60)} min`;
   if (s < 86400) return `vor ${Math.round(s / 3600)} h`;
-  return `vor ${Math.round(s / 86400)} Tagen`;
+  const d = Math.round(s / 86400);
+  return d === 1 ? 'vor 1 Tag' : `vor ${d} Tagen`;
 }
 
 export const TYPE_LABEL = {client: 'Client', repeater: 'Repeater', room: 'Room', sensor: 'Sensor', unknown: '?'};

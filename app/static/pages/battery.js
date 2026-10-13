@@ -51,6 +51,7 @@ export async function mount(root, ctx) {
       <h3>Temperatur</h3><div id="chTemp"></div>
     </section>
     <section id="tableView" class="card" hidden>
+      <div class="chips" id="tableTabs" style="margin-bottom:8px"></div>
       <p id="tableFor" class="muted small" style="margin-top:0"></p>
       <div class="lc-table"><table><thead><tr><th>Zeit</th><th>Akku (mV)</th><th>Akku (≈ %)</th><th>Temperatur (°C)</th></tr></thead>
       <tbody id="rows"></tbody></table></div>
@@ -59,7 +60,7 @@ export async function mount(root, ctx) {
   const $ = id => root.querySelector('#' + id);
   const SLOTS = 3;                                                  // bis zu drei Repeater nebeneinander im Diagramm
   const COLORS = ['--c-batt', '--c-batt2', '--c-batt3'];             // je Platz fest: gleiche Farbe, Strichart und Markierung in Akku- UND Temperatur-Diagramm
-  const SHAPES = [{dash: null, shape: 'circle'}, {dash: '7 4', shape: 'circle'}, {dash: '2 5', shape: 'circle'}];
+  const SHAPES = [{dash: null, shape: 'circle'}, {dash: null, shape: 'circle'}, {dash: null, shape: 'circle'}];   // alle durchgezogen, Unterschied nur über die Farbe
   const sampleSvg = i => {
     const c = `var(${COLORS[i]})`, d = SHAPES[i].dash ? ` stroke-dasharray="${SHAPES[i].dash}"` : '';
     const m = SHAPES[i].shape === 'square' ? `<rect x="11" y="6" width="6" height="6" fill="${c}"/>`
@@ -67,6 +68,7 @@ export async function mount(root, ctx) {
     return `<svg class="swatch" width="28" height="18" viewBox="0 0 28 18" aria-hidden="true"><line x1="0" y1="9" x2="28" y2="9" stroke="${c}" stroke-width="2"${d}/>${m}</svg>`;
   };
   let nodes = [], sel = [null, null, null], hours = 24, view = 'chart', rowsBy = {}, charts = [];
+  let tableSlot = null;                                              // welcher Repeater in der Tabelle steht (Reiter)
   let alive = true, selectionRestored = false, pollGapS = 20;
   const busy = [null, null, null];                                  // Status je Platz während „Jetzt abfragen“ (wartet / fragt ab / Fehler)
 
@@ -107,9 +109,14 @@ export async function mount(root, ctx) {
       extraSeries: extra.map(a => ({points: points(a.k, 'temp'), colorVar: COLORS[a.i], dash: SHAPES[a.i].dash, shape: SHAPES[a.i].shape, label: a.n.name}))}));
   }
 
+  // Tabelle: bei mehreren Repeatern je einer über Reiter (mit demselben Linienmuster wie im Diagramm), nicht alle gemischt.
+  const tableMain = () => { const act = active(); return act.find(a => a.i === tableSlot) || act[0]; };
   function drawTable() {
-    const main = active()[0], rows = main ? (rowsBy[main.k] || []) : [];
-    $('tableFor').textContent = main ? `Messwerte von ${main.n.name}${active().length > 1 ? ' (die Tabelle zeigt den ersten gewählten Repeater)' : ''}` : '';
+    const act = active(), main = tableMain(), rows = main ? (rowsBy[main.k] || []) : [];
+    $('tableTabs').innerHTML = act.length > 1 ? act.map(a =>
+      `<button type="button" data-tab="${a.i}" class="${a.i === main.i ? 'on' : ''}">${sampleSvg(a.i)} ${esc(a.n.name)}</button>`).join('') : '';
+    $('tableFor').textContent = main ? `Messwerte von ${main.n.name}` : '';
+    updateCsv();
     $('rows').innerHTML = rows.length ? [...rows].reverse().map(r => `<tr>
       <td>${esc(fmtDateTime(r.ts))}</td>
       <td>${r.mv == null ? '<span class="muted">–</span>' : r.mv}</td>
@@ -118,7 +125,20 @@ export async function mount(root, ctx) {
       : '<tr><td colspan="4" class="muted">Noch keine Messwerte in diesem Zeitraum.</td></tr>';
   }
 
+  // CSV: in der Tabelle der gewählte Reiter, sonst der erste Repeater
+  function updateCsv() {
+    const m = view === 'table' ? tableMain() : active()[0];
+    $('csv').href = m ? `/api/battery/${m.k}/export.csv?hours=${hours}` : '#';
+  }
+  $('tableTabs').onclick = e => {
+    const b = e.target.closest('button[data-tab]');
+    if (!b) return;
+    tableSlot = Number(b.dataset.tab);
+    drawTable();
+  };
+
   function showView() {
+    updateCsv();
     const any = active().length > 0;
     $('chartView').hidden = view !== 'chart' || !any;
     $('tableView').hidden = view !== 'table' || !any;
@@ -170,7 +190,6 @@ export async function mount(root, ctx) {
       rowsBy = fresh;
       $('error').textContent = '';
     } catch (e) { if (stale()) return; $('error').textContent = e.message; rowsBy = {}; }
-    $('csv').href = act[0] ? `/api/battery/${act[0].k}/export.csv?hours=${h}` : '#';
     showView();
   }
 

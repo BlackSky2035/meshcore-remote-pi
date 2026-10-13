@@ -150,7 +150,7 @@ button.chat-menu-item:hover, label.chat-menu-item:hover { background: var(--bg);
 .lc-grid { stroke: var(--lc-grid); stroke-width: 1; }
 .lc-axis { fill: var(--lc-axis); font-size: 11px; }
 .lc-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-.lc-dot { stroke: var(--lc-ring); stroke-width: 2; }
+.lc-dot { stroke: var(--lc-ring); stroke-width: 1; paint-order: stroke; }   /* Rand hinter der Füllung: dicht liegende Punkte schneiden sich nicht gegenseitig an */
 .lc-focus { stroke: var(--lc-ring); stroke-width: 2; }
 .lc-cross { stroke: var(--lc-axis); stroke-width: 1; }
 .lc-thresh { stroke: var(--bad); stroke-width: 1; stroke-dasharray: 4 4; }
