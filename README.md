@@ -272,6 +272,8 @@ Einzelne Fehler sollen nie das ganze Programm beenden; stattdessen gibt es eine 
 - **Datenbank fällt aus:** Eingehende Nachrichten lösen trotzdem Auto-Antwort, Push, Stichwort-Meldung und Raum aus (nur der Verlauf fehlt).
   Ist der gespeicherte Pausenzustand nicht lesbar (Datenbank kaputt, nur Arbeitsspeicher), startet die Automatik **pausiert** und zeigt einen Hinweis –
   sie sendet nach einem Datenbankschaden also nie ungewollt. Bei Bedarf von Hand fortsetzen.
+- **Ohne Internet staut sich nichts:** Push-Meldungen und die Abfrage anderer Stationen laufen in eigenen, kleinen Thread-Pools. Hängen sie (z. B.
+  Namensauflösung ohne Internet), bleibt die Datenbank trotzdem schnell; nach 3 Netzfehlern hintereinander pausiert Push 5 min.
 - **Live-Anzeige wird nicht „taub“:** Hängt das Senden an einen Browser (schlechter Empfang), trennt der Server die Verbindung, damit der Browser neu verbindet.
 - **Stummer Kanalplatz:** Antwortet ein einzelner Kanalplatz nicht, werden die übrigen trotzdem gelesen und gemerkt; nur der stumme wird frühestens
   nach 60 s erneut gefragt, je Versuch höchstens 45 s lang. Solange er fehlt, meldet die Kanalliste einen Fehler statt einer unvollständigen Liste

@@ -14,6 +14,7 @@ import json
 import logging
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 from urllib.parse import urlparse
@@ -77,6 +78,10 @@ class PeerWatch:
     def __init__(self, peers: list[Peer], notify: Callable[[str, str], Awaitable[None]],
                  fetch: Callable[[Peer], dict] = fetch_summary, clock: Callable[[], float] = time.time):
         self.peers, self.notify, self._fetch, self._clock = peers, notify, fetch, clock
+        # eigener kleiner Pool und je Station höchstens EINE Abfrage gleichzeitig: hängt eine (DNS ohne Internet), stapeln sich
+        # nicht jede Minute neue Threads im gemeinsamen Pool, den auch die Datenbank nutzt
+        self._pool = ThreadPoolExecutor(max_workers=max(1, min(len(peers), 4)), thread_name_prefix="peers")
+        self._running: dict[str, object] = {}
 
     def status(self) -> list[dict]:
         return [{"name": p.name, "url": p.url, "ok": p.ok, "last_ok": p.last_ok, "error": p.error, "alerted": p.alerted,
@@ -87,7 +92,12 @@ class PeerWatch:
 
     async def _poll(self, p: Peer) -> None:
         try:
-            p.summary = await asyncio.wait_for(asyncio.to_thread(self._fetch, p), TIMEOUT_S + 5)
+            prev = self._running.get(p.name)
+            if prev is not None and not prev.done():   # vorige Abfrage hängt noch: keine zweite starten, zählt als Fehlschlag
+                raise TimeoutError("vorige Abfrage hängt noch")
+            fut = asyncio.get_running_loop().run_in_executor(self._pool, self._fetch, p)
+            self._running[p.name] = fut
+            p.summary = await asyncio.wait_for(asyncio.shield(fut), TIMEOUT_S + 5)
             p.ok, p.fails, p.error, p.last_ok = True, 0, "", self._clock()
             if p.alerted:
                 p.alerted = False

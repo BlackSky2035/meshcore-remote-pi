@@ -13,6 +13,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 
 from . import webpush
 from .battery import battery_pct
@@ -22,6 +23,10 @@ log = logging.getLogger("meshcore-remote")
 
 MAX_PER_HOUR = 120
 SEND_TIMEOUT_S = 12.0
+SEND_THREADS = 4             # eigener Thread-Pool: hängende Sendungen belegen nie die Threads der Datenbank (AsyncStorage)
+SLOT_WAIT_S = 2.0            # alle Sende-Threads hängen noch → nicht anstellen, sondern diese Meldung auslassen
+BREAKER_FAILS = 3            # so viele Netzfehler hintereinander …
+BREAKER_PAUSE_S = 300.0      # … dann so lange keine Versuche (z. B. Pi ohne Internet: kein Stau aus hängenden Sendungen)
 DEFAULT_CONTACT = "mailto:meshcore-remote@example.com"   # Pflichtangabe von VAPID; Apple verlangt eine gültig aussehende Adresse
 NAMES_TTL_S = 300
 
@@ -32,7 +37,10 @@ class PushService:
         self._vapid: dict | None = None
         self._vapid_lock = asyncio.Lock()      # gleichzeitige erste Aufrufe dürfen nicht zwei verschiedene Schlüssel erzeugen
         self._sent: dict[str, deque] = defaultdict(deque)
-        self._sem = asyncio.Semaphore(4)
+        self._sem = asyncio.Semaphore(SEND_THREADS)
+        self._pool = ThreadPoolExecutor(max_workers=SEND_THREADS, thread_name_prefix="push")
+        self._net_fails = 0                    # Netzfehler hintereinander (Zeitüberschreitung/Verbindung)
+        self._pause_until = 0.0                # monotone Zeit: bis dahin nicht senden
         self._tasks: set[asyncio.Task] = set()
         self._names: tuple[float, dict[int, str]] = (0.0, {})
         self.problem: str | None = None
@@ -168,6 +176,13 @@ class PushService:
     async def _deliver(self, subs: list[dict], payload: dict) -> None:
         await asyncio.gather(*(self._one(s, payload) for s in subs), return_exceptions=True)
 
+    def _net_failed(self) -> None:
+        self._net_fails += 1
+        if self._net_fails >= BREAKER_FAILS:
+            self._pause_until = time.monotonic() + BREAKER_PAUSE_S
+            self._net_fails = 0
+            log.warning("Push: %d Netzfehler hintereinander – %d s Pause", BREAKER_FAILS, BREAKER_PAUSE_S)
+
     def _allowed(self, endpoint: str) -> bool:
         q, now = self._sent[endpoint], self._clock()
         while q and now - q[0] > 3600:
@@ -180,19 +195,34 @@ class PushService:
     async def _one(self, sub: dict, payload: dict) -> str:
         if not self._allowed(sub["endpoint"]):
             return "Limit erreicht (zu viele Benachrichtigungen pro Stunde)"
+        if time.monotonic() < self._pause_until:
+            return self.problem or "Push pausiert (Push-Dienst zuletzt nicht erreichbar)"
         try:
             vapid = await self.vapid()
-            async with self._sem:
-                await asyncio.wait_for(asyncio.to_thread(self._send, sub, payload, vapid, self.contact), SEND_TIMEOUT_S)
-            self.problem = None
+            # Platz erst freigeben, wenn der Thread WIRKLICH fertig ist: wait_for bricht nur das Warten ab, der Thread läuft
+            # weiter (z. B. hängende DNS-Auflösung ohne Internet). Früher wurde der Platz sofort frei, und hängende Threads
+            # stapelten sich im gemeinsamen Pool – bis die Datenbank (gleicher Pool) keine Threads mehr bekam.
+            try:
+                await asyncio.wait_for(self._sem.acquire(), SLOT_WAIT_S)
+            except asyncio.TimeoutError:
+                self.problem = "Push-Dienst antwortet nicht (alle Sendeplätze belegt)"
+                log.warning("Push: %s", self.problem)
+                return self.problem
+            fut = asyncio.get_running_loop().run_in_executor(self._pool, self._send, sub, payload, vapid, self.contact)
+            fut.add_done_callback(lambda _f: self._sem.release())
+            await asyncio.wait_for(asyncio.shield(fut), SEND_TIMEOUT_S)
+            self.problem, self._net_fails = None, 0
             return "ok"
         except webpush.PushGone:
             await self.store.delete_push_sub(sub["endpoint"])           # Gerät hat sich abgemeldet
             return "Abo ist abgelaufen und wurde entfernt"
         except asyncio.TimeoutError:
             self.problem = "Push-Dienst antwortet nicht (Internet?)"
+            self._net_failed()
         except webpush.PushError as e:
             self.problem = f"Push-Dienst meldet Fehler: {e}"
+            if not str(e).startswith("HTTP"):         # Verbindung/DNS/Zeitlimit (nicht: Dienst hat geantwortet)
+                self._net_failed()
         except Exception as e:
             log.exception("Push senden fehlgeschlagen")
             self.problem = f"{type(e).__name__}: {e}"

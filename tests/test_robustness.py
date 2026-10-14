@@ -115,3 +115,82 @@ async def test_temperature_is_booked_when_it_is_really_sent(rt):
             "config": {"targets": [REPEATER_OK], "interval_min": 60, "low_mv": 3500, "temperature": True}}
     await auto.run_rule(rule)
     assert budget.stats()["used_last_hour"] == 2               # Status + Telemetrie
+
+
+# ---- 8: hängender Push/Stationsabruf blockiert nie die Datenbank (eigener Pool, Platz erst nach Thread-Ende frei) ----
+import threading
+import time as _time
+
+from app.push import PushService
+
+
+async def test_hanging_push_never_blocks_the_database(rt, monkeypatch):
+    monkeypatch.setattr("app.push.SEND_TIMEOUT_S", 0.1)
+    monkeypatch.setattr("app.push.SLOT_WAIT_S", 0.05)
+    release = threading.Event()
+
+    def hang(*a, **k):
+        release.wait(5)                                # z. B. DNS ohne Internet
+    push = PushService(rt.store, send=hang)
+    sub = {"endpoint": "https://push.example/x", "p256dh": "x", "auth": "y"}
+    try:
+        results = [await push._one({**sub, "endpoint": f"https://push.example/{i}"}, {"t": 1}) for i in range(12)]
+        assert all(r != "ok" for r in results)
+        t0 = _time.monotonic()
+        await rt.store.get_setting("irgendwas")        # Datenbank-Thread ist trotzdem sofort da
+        assert _time.monotonic() - t0 < 0.5
+        assert push._pool._max_workers == 4            # hängende Sendungen bleiben in ihrem eigenen Pool
+    finally:
+        release.set()
+
+
+async def test_push_pauses_after_repeated_network_failures(rt, monkeypatch):
+    from app import webpush
+    calls = []
+
+    def fail(*a, **k):
+        calls.append(1)
+        raise webpush.PushError("<urlopen error [Errno -3] Temporary failure in name resolution>")
+    push = PushService(rt.store, send=fail)
+    for i in range(6):
+        await push._one({"endpoint": f"https://push.example/{i}", "p256dh": "x", "auth": "y"}, {"t": 1})
+    assert len(calls) == 3                              # nach 3 Netzfehlern Pause, keine weiteren Versuche
+
+
+async def test_http_errors_do_not_trigger_the_pause(rt):
+    from app import webpush
+    calls = []
+
+    def http_err(*a, **k):
+        calls.append(1)
+        raise webpush.PushError("HTTP 500")
+    push = PushService(rt.store, send=http_err)
+    for i in range(5):
+        await push._one({"endpoint": f"https://push.example/{i}", "p256dh": "x", "auth": "y"}, {"t": 1})
+    assert len(calls) == 5                              # Dienst antwortet: kein Netzproblem, keine Pause
+
+
+async def test_hanging_peer_fetch_does_not_pile_up_threads():
+    from app.peers import Peer, PeerWatch
+    started, release = [], threading.Event()
+
+    def hang(p):
+        started.append(1)
+        release.wait(5)
+        return {}
+    notes = []
+
+    async def notify(kind, text):
+        notes.append(kind)
+    w = PeerWatch([Peer("B", "https://b.example", "t")], notify, fetch=hang)
+    import app.peers as P
+    old = P.TIMEOUT_S
+    P.TIMEOUT_S = -4.9                                  # wait_for-Grenze ≈ 0,1 s
+    try:
+        for _ in range(4):
+            await w.poll_once()
+        assert len(started) == 1                        # keine neuen Threads, solange der erste hängt
+        assert w.peers[0].fails == 4 and notes == ["down"]
+    finally:
+        P.TIMEOUT_S = old
+        release.set()

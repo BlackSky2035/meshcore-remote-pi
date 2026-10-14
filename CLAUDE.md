@@ -298,6 +298,10 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 
 ## Push (Web-Push)
 - `webpush.py` = eigene RFC-8291/8292-Umsetzung (nur `cryptography`), NICHT durch `pywebpush` ersetzen (`http-ece` lässt sich mit neuem setuptools nicht installieren). Der RFC-Testvektor in `tests/test_push.py` muss grün bleiben.
+- `push.py`: eigener `ThreadPoolExecutor` (`SEND_THREADS` 4), NICHT der gemeinsame Pool (den nutzt `AsyncStorage`): hängende Sendungen (DNS ohne Internet) blockierten sonst die Datenbank.
+  Der Semaphor-Platz wird erst frei, wenn der Thread wirklich fertig ist (`add_done_callback`, `wait_for(shield(fut))`); kein Platz binnen `SLOT_WAIT_S` → Meldung auslassen.
+  Nach `BREAKER_FAILS` (3) Netzfehlern hintereinander (Zeitlimit oder `PushError` ohne „HTTP“) `BREAKER_PAUSE_S` (5 min) keine Versuche. `peers.py` ebenso: eigener Pool, je Station
+  höchstens eine laufende Abfrage (hängt sie noch, zählt das als Fehlschlag). Tests: `tests/test_robustness.py` (hanging_push, peer).
 - `push.py`: Senden nur als Hintergrund-Task mit Zeitlimit; nie im Ereignispfad awaiten. Endpunkte nur `https` und mit Hostnamen (`validate_endpoint`, Schutz vor Zugriffen auf interne Ziele).
 - Service Worker (`static/sw.js`) bewusst ohne Zwischenspeicher der Seiten. Tippen auf eine Meldung bei schon offener App: der Service Worker schickt `{type: 'mc-open', url}` per `postMessage`, `app.js` setzt den Hash (bei gleichem Hash `route()`); `navigate()` wird nicht mehr benutzt (iOS-Home-Bildschirm-App unzuverlässig). Rückkehr aus dem Hintergrund (`visibilitychange`): WebSocket neu verbinden (wenn > 15 s weg oder nicht offen), Status neu laden und `_resume` an die Seite schicken; die Kanal-Seite lädt dann Liste und offenen Chat nach. Vom Entwickler auf dem iPhone bestätigt.
 - Getestet vom Entwickler mit iPhone, Mac und Windows-PC; Android und andere Browser nicht geprüft.
