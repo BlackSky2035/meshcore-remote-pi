@@ -33,6 +33,7 @@ class Settings:
     peer_token: str = ""         # Geheimwort, mit dem andere Stationen den Kurzstatus abfragen dürfen (leer = aus)
     peers: str = ""              # andere Stationen: "Name|https://adresse|token; Name2|…" (token = deren peer_token)
     watchdog_port: int = 8100   # Port des separaten Watchdogs (0 = Link ausblenden)
+    allowed_hosts: str = ""     # weitere Rechnernamen, unter denen die Seite aufgerufen wird (IPs, localhost, *.ts.net, eigener Name/.local gehen immer)
     # node
     mode: str = "sim"  # sim | serial | tcp | ble
     serial_port: str = "auto"
@@ -54,7 +55,8 @@ class Settings:
 
 
 _SECTIONS = {
-    "server": ("host", "port", "watchdog_port", "access_password", "station_name", "peer_token", "peers", "control_token"),
+    "server": ("host", "port", "watchdog_port", "access_password", "station_name", "peer_token", "peers", "control_token",
+               "allowed_hosts"),
     "node": (
         "mode", "serial_port", "baudrate", "tcp_host", "tcp_port",
         "ble_address", "ble_pin", "debug",

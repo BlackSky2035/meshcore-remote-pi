@@ -272,7 +272,7 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 ## USB-Überwachung
 - `usb.py`: `list_ports()` (wirft nie), `candidates()` nach Punkten (Gerätename, bekannte VIDs, Text), `resolve_port(configured, ports)`.
   Mehrere Kandidaten → bester, Warnung im Log. `serial_port = "auto"` oder fester Pfad.
-- `supervisor.py` (alle 2 s): Port verschwunden → sofort trennen (Vergleich über aufgelöste Pfade, `usb.port_present`, by-id-Symlinks gehen; eine gescheiterte Port-Abfrage trennt nie); Herzschlag alle 30 s (`node.alive()`; läuft gerade ein Befehl am Node, zählt das als Lebenszeichen, begrenzt ist nur die Abfrage selbst), 2× keine Antwort → trennen + neu;
+- `supervisor.py` (alle 2 s): Port verschwunden → sofort trennen (Vergleich über aufgelöste Pfade, `usb.port_present`, by-id-Symlinks gehen; eine gescheiterte Port-Abfrage trennt nie); Herzschlag alle 30 s (`node.alive()`; läuft gerade ein Befehl am Node, zählt das nur als Lebenszeichen, wenn in den letzten `ALIVE_BUSY_GRACE_S` = 90 s irgendein Ereignis vom Node kam (`_heard`, Abo auf alle Ereignisse) – früher galt „Sperre belegt“ immer als lebendig, mit offenem Browser-Tab wurde ein hängender Node so nie erkannt; begrenzt ist nur die Abfrage selbst), 2× keine Antwort → trennen + neu;
   nicht verbunden + Gerät da → nach 2 s Wartezeit verbinden, bei Fehlern Abstand 3→30 s; Zustand an `UsbMonitor`.
 - Zustände: `ok`, `no_device`, `no_response`, `no_permission` (dialout-Hinweis). Jeder Wechsel steht in `usb_events`; Verfügbarkeit 24 h/7 Tage
   wird daraus gerechnet (Zeiten, in denen die App selbst nicht lief, zählen als „unverändert“). Meldung nach 60 s Ausfall genau einmal
@@ -304,6 +304,11 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 - `access_password` (config.toml `[server]` oder `MC_ACCESS_PASSWORD`); leer = aus. `auth.py`: Cookie `mc_session` (HttpOnly, SameSite=Strict, bei https Secure),
   30 Tage, HMAC aus dem Passwort. Middleware in `main.py` schützt alles unter `/api/` und `/ws`. OFFEN bleiben: `/api/health`, `/api/version` (Watchdog-Prüfung!),
   `/api/auth/*`, `/api/peer/summary` (eigenes Token), Seitenhülle und `/static`. Nach 5 Fehlversuchen in 60 s Sperre für 60 s (global).
+- Rechnernamen- und Fremdseiten-Schutz (`hostguard.py`, Middleware + `/ws` in `main.py`, gilt AUCH ohne Passwort, nicht aufweichen): Host nur IP, localhost, `*.ts.net`,
+  eigener Rechnername (auch `.local`) oder `allowed_hosts` (sonst 403, gegen DNS-Rebinding); `/api/…` und `/ws`: `Sec-Fetch-Site: cross-site` → 403/1008, `same-origin`/`none` → ok,
+  sonst entscheidet `Origin` STRENG (`origin_ok`): gleich Host bzw. X-Forwarded-Host, eigener Name (Rechnername, `.local`, `<name>.<tailnet>.ts.net`) oder `allowed_hosts` –
+  NICHT jede IP/localhost/*.ts.net (fremde Seiten unter IP oder Tailscale Funnel). Chromium schickt bei WebSockets KEIN Sec-Fetch-Site, nur Origin (im Browser geprüft).
+  In Tests erlaubt `conftest.py` die Namen „test“/„testserver“; echte Prüfung: `tests/test_hostguard.py`.
 - Nicht aufweichen: neue `/api/`-Pfade sind automatisch geschützt; nichts mit Daten auf die offene Liste setzen. Passwort steht im Klartext in config.toml.
 
 ## Weitere Seiten (alle im Simulator getestet, nicht an Hardware)

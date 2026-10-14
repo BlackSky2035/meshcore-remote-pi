@@ -84,6 +84,7 @@ class RealNode(BaseNode):
         self._cmd_lock = asyncio.Lock()          # nur ein Befehl an den Node gleichzeitig, siehe _locked()
         self._clock = clock
         self._battery: tuple[float, int | None] | None = None   # (zuletzt abgefragt, mV) für status()
+        self._last_heard: float | None = None    # monotone Zeit, zu der zuletzt irgendetwas vom Node kam (für alive())
 
     @property
     def uses_usb(self) -> bool:             # type: ignore[override]
@@ -95,22 +96,33 @@ class RealNode(BaseNode):
 
     ALIVE_TIMEOUT_S = 10.0
     ALIVE_LOCK_WAIT_S = 2.0
+    ALIVE_BUSY_GRACE_S = 90.0      # länger als der längste Befehl (~70 s); fast jeder Befehl bekommt sofort eine erste Antwort
+
+    def _heard(self, _event: Any = None) -> None:
+        """Jedes Ereignis vom Node (Antwort, Funk-Log, Nachricht) ist ein Lebenszeichen."""
+        self._last_heard = time.monotonic()
+
+    def _busy_but_alive(self) -> bool:
+        """Sperre belegt: zählt nur als Lebenszeichen, wenn der Node vor Kurzem noch etwas geschickt hat. Früher galt
+        „Sperre belegt“ immer als lebendig – mit offenem Browser-Tab (Status alle 15 s) war die Sperre bei hängender Firmware
+        praktisch dauerhaft belegt und der Supervisor hat nie neu verbunden."""
+        return self._last_heard is not None and time.monotonic() - self._last_heard < self.ALIVE_BUSY_GRACE_S
 
     async def alive(self) -> bool:
         """Herzschlag: kleine Abfrage, die der Node beantworten muss. Fehler/Zeitüberschreitung = nicht lebendig.
-        Läuft gerade ein anderer Befehl (Repeater-Status, Nachricht mit Bestätigung … oft 15–70 s), zählt das als Lebenszeichen:
-        sonst würde das Warten auf die Sperre als „Node tot“ gewertet. Zeitlich begrenzt ist nur die Abfrage selbst."""
+        Läuft gerade ein anderer Befehl (Repeater-Status, Nachricht mit Bestätigung … oft 15–70 s), zählt das als Lebenszeichen,
+        solange der Node in den letzten ALIVE_BUSY_GRACE_S etwas geschickt hat (sonst hängt er). Zeitlich begrenzt ist nur die Abfrage selbst."""
         if not self.connected:
             return False
         if self._cmd_lock.locked():
-            return True
+            return self._busy_but_alive()
         # nicht wait_for(acquire()): unter Python 3.11 kann die Sperre dabei bei einer Zeitüberschreitung belegt bleiben
         acq = asyncio.ensure_future(self._cmd_lock.acquire())
         done, _ = await asyncio.wait({acq}, timeout=self.ALIVE_LOCK_WAIT_S)
         if not done:                                # ein anderer Befehl kam zuvor dran und läuft noch
             acq.add_done_callback(lambda f: None if f.cancelled() or f.exception() else self._cmd_lock.release())
             acq.cancel()
-            return self.connected
+            return self.connected and self._busy_but_alive()
         try:
             res = await asyncio.wait_for(self.mc.commands.send_device_query(), self.ALIVE_TIMEOUT_S)
             return res is not None and res.type != self._EventType.ERROR
@@ -159,6 +171,8 @@ class RealNode(BaseNode):
             self.port = None
             raise NodeError("Verbindung fehlgeschlagen (kein Node geantwortet)")
 
+        self._last_heard = time.monotonic()      # frisch verbunden = gerade geantwortet
+        self.mc.subscribe(None, self._heard)     # alle Ereignisse (synchron, ohne Aufgabe) als Lebenszeichen
         for name in FORWARDED:
             et = getattr(EventType, name, None)
             if et is not None:

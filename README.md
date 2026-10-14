@@ -262,6 +262,9 @@ Einzelne Fehler sollen nie das ganze Programm beenden; stattdessen gibt es eine 
 - Startet die Automatik nicht, läuft die Oberfläche trotzdem; der Grund steht als Hinweis dort.
 - Fehler in Event-Listenern, in einzelnen Regeln und im Zeitplan werden protokolliert und stoppen nichts. Ein hängender Browser
   (WebSocket) blockiert nach 5 s niemanden mehr. Bei Verbindungsverlust versucht der Supervisor die Verbindung mit wachsendem Abstand (3 s bis 30 s) neu aufzubauen.
+- **Hängender Node:** Der Herzschlag (alle 30 s) erkennt eine hängende Firmware auch dann, wenn ständig Befehle anstehen (z. B. weil die Seite
+  offen ist und alle 15 s den Status abfragt): Ein laufender Befehl zählt nur als Lebenszeichen, wenn der Node in den letzten 90 s
+  irgendetwas geschickt hat. Nach zwei verpassten Herzschlägen wird neu verbunden. Nur im Simulator/mit nachgebauter Bibliothek getestet.
 - Der Node-Status darf ausfallen, ohne dass die Seite leer bleibt (`node_error`). `/api/health` kostet nichts (Selbsttest).
 - Im Browser werden Fehler als Banner angezeigt statt still zu verschwinden; „Server nicht erreichbar“ wird verständlich gemeldet.
 Der Watchdog (eigenes Projekt) hat zusätzlich eine Selbstüberwachung durch systemd, siehe dessen README.
@@ -276,6 +279,22 @@ Der Watchdog (eigenes Projekt) hat zusätzlich eine Selbstüberwachung durch sys
 - **Ohne `access_password` gibt es keinen Login.** Es gibt keine Benutzerkonten und kein Rechtesystem: Wer die Seite erreicht, darf **alles**: Nachrichten über Funk senden, Kanäle ändern, den Node
   neu starten, Repeater verwalten (mit gemerkten Repeater-Passwörtern) und über den Link „System ↗“ zum Watchdog gelangen.
 - Der **Watchdog** darf das Programm stoppen, starten und per `git pull` aktualisieren. Er hat einen eigenen, optionalen `token`; **lesen** (Status, Protokoll) geht auch ohne Token.
+
+**Schutz vor fremden Webseiten (auch ohne Passwort):** Tailscale schützt nur davor, dass Fremde den Pi direkt erreichen.
+Eine präparierte Webseite, die du in deinem Browser öffnest, läuft aber auf deinem Gerät – also mitten in deinem Netz.
+Deshalb gilt im Hauptprogramm:
+- **Nur bekannte Rechnernamen:** IP-Adressen, `localhost`, `*.ts.net` (Tailscale), der Rechnername des Pi (auch `name.local`)
+  und was unter `[server] allowed_hosts` steht (z. B. `allowed_hosts = "funk.heim.lan, .meinedomain.de"`; `"*"` schaltet die
+  Prüfung ab). Jeder andere Name im Host-Kopf wird mit 403 abgewiesen – das verhindert DNS-Rebinding (fremder Name, der
+  plötzlich auf den Pi zeigt). Rufst du die Seite unter einem eigenen Namen auf und bekommst 403, trag ihn dort ein
+  (auch die Adresse, unter der eine andere Station oder der Watchdog dieses Programm abfragt).
+- **Keine Aufrufe von fremden Seiten:** Anfragen an `/api/…` und die Live-Verbindung (`/ws`), die der Browser als
+  „von einer fremden Seite“ kennzeichnet (`Sec-Fetch-Site: cross-site`) oder deren Herkunft (`Origin`) nicht die eigene Adresse
+  bzw. ein eigener Name des Pi ist (Rechnername, `name.local`, `name.<tailnet>.ts.net`, `allowed_hosts`), werden abgewiesen.
+  Werkzeuge ohne Browser (Watchdog, curl, andere Station) sind davon nicht betroffen. Im Browser (Chromium) geprüft: eigene
+  Oberfläche über IP und `localhost` geht, eine fremde Seite bekommt weder Formular-Aufrufe noch die Live-Verbindung durch.
+  Hinter `tailscale serve` mit einem Tailscale-Namen, der nicht dem Rechnernamen entspricht: diesen Namen in `allowed_hosts` eintragen.
+  Ein Passwort bleibt trotzdem sinnvoll (zweite Schicht, z. B. bei einem entsperrten Handy in fremder Hand).
 
 ### So sicherst du es ab (Checkliste)
 

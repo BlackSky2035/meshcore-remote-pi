@@ -38,6 +38,7 @@ async def test_alive_returns_true_while_a_long_command_holds_the_lock():
         return _ok({})
     n.mc = SimpleNamespace(is_connected=True, contacts={REPEATER_OK: {"public_key": REPEATER_OK}},
                            commands=SimpleNamespace(req_status_sync=slow_status, send_device_query=query))
+    n._heard()                                                # Node hat eben noch geantwortet
     busy = asyncio.create_task(n.repeater_status(REPEATER_OK))
     await asyncio.sleep(0)
     assert n._cmd_lock.locked()
@@ -57,6 +58,37 @@ async def test_alive_limits_only_the_device_query():
     n.mc = SimpleNamespace(is_connected=True, commands=SimpleNamespace(send_device_query=hang))
     assert await asyncio.wait_for(n.alive(), 1) is False
     assert not n._cmd_lock.locked()
+
+
+async def test_alive_detects_a_hung_node_even_while_the_lock_is_always_busy(monkeypatch):
+    """Hängende Firmware, Browser-Tab fragt alle 15 s den Status ab: die Sperre ist praktisch immer belegt.
+    Das darf nur so lange als Lebenszeichen zählen, wie der Node vor Kurzem noch etwas geschickt hat."""
+    n = RealNode(_emit, Settings(mode="serial"))
+    n._EventType = SimpleNamespace(ERROR="error")
+    now = [1000.0]
+    monkeypatch.setattr("app.node.real.time.monotonic", lambda: now[0])
+    n.mc = SimpleNamespace(is_connected=True, commands=SimpleNamespace())
+    n._heard()
+    await n._cmd_lock.acquire()                               # hängender Befehl hält die Sperre
+    try:
+        now[0] += 30
+        assert await n.alive() is True                        # eben noch gehört: langer Befehl ist normal
+        now[0] += n.ALIVE_BUSY_GRACE_S
+        assert await n.alive() is False                       # seit 2 min nichts mehr vom Node: hängt
+        n._heard()                                            # irgendein Ereignis kommt wieder an
+        assert await n.alive() is True
+    finally:
+        n._cmd_lock.release()
+
+
+async def test_never_heard_and_busy_counts_as_not_alive():
+    n = RealNode(_emit, Settings(mode="serial"))
+    n.mc = SimpleNamespace(is_connected=True)
+    await n._cmd_lock.acquire()
+    try:
+        assert await n.alive() is False
+    finally:
+        n._cmd_lock.release()
 
 
 # ---- 2. Anschluss-Prüfung des Supervisors ---------------------------------------------------------------
@@ -226,6 +258,7 @@ async def test_alive_gives_up_waiting_for_the_lock_without_leaking_it():
     async def query():
         return _ok({})
     n.mc = SimpleNamespace(is_connected=True, commands=SimpleNamespace(send_device_query=query))
+    n._heard()
     await n._cmd_lock.acquire()
     waiter = asyncio.create_task(n._cmd_lock.acquire())          # nächster Befehl steht schon an
     await asyncio.sleep(0)

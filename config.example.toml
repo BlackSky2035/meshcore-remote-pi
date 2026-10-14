@@ -11,6 +11,9 @@ port = 8000
 # Gemeinsames Passwort für die Oberfläche (leer = keine Anmeldung). Bei Zugriff über Tailscale/LAN empfohlen.
 # Die Datei config.toml niemals weitergeben oder ins Git legen.
 access_password = ""
+# Weitere Rechnernamen, unter denen du die Seite aufrufst (Schutz gegen DNS-Rebinding). IP-Adressen, localhost,
+# *.ts.net (Tailscale) und der Rechnername des Pi (auch name.local) gehen immer. Beispiel: "funk.heim.lan, .meinedomain.de"
+allowed_hosts = ""
 # Gegenseitige Überwachung mehrerer Stationen (z. B. zwei Pis): Jede Station bekommt ein eigenes Geheimwort (peer_token) und trägt die
 # anderen unter peers ein: "Name|https://adresse|Geheimwort der anderen; Name2|…". Ist eine Station 3 Minuten nicht erreichbar, kommt eine Meldung.
 station_name = ""

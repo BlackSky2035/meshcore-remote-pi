@@ -1,6 +1,8 @@
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from app import hostguard
 from app.automation import SendBudget
 from app.config import Settings
 from app.main import create_app
@@ -11,6 +13,17 @@ ALICE = "a1" * 32
 BOB = "b2" * 32
 REPEATER_OK = "c3" * 32     # 4010 mV
 REPEATER_LOW = "d4" * 32    # 3620 mV
+
+
+REAL_HOST_ALLOWED = hostguard.host_allowed
+TEST_HOSTS = ("test", "t", "testserver")      # Namen der Test-Clients (httpx/Starlette)
+
+
+@pytest.fixture(autouse=True)
+def _test_hosts(monkeypatch):
+    """Die Test-Clients schicken Host „test“/„testserver“; die echte Prüfung testet tests/test_hostguard.py."""
+    monkeypatch.setattr(hostguard, "host_allowed",
+                        lambda header, extra=(): hostguard.host_name(header) in TEST_HOSTS or REAL_HOST_ALLOWED(header, extra))
 
 
 class FakeClock:

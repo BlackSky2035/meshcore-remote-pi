@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from . import auth as authmod
+from . import hostguard
 from .api import make_router
 from .config import load_settings
 from .node import NodeError
@@ -73,8 +74,17 @@ def create_app(rt: Runtime) -> FastAPI:
     app.include_router(authmod.make_router(auth))
     app.include_router(make_router(rt))
 
+    extra_hosts = hostguard.parse_allowed(rt.settings.allowed_hosts)
+
     @app.middleware("http")
     async def require_login(request: Request, call_next):
+        # Schutz gegen DNS-Rebinding (fremder Name im Host) und fremde Webseiten (Cross-Site), auch ohne Passwort wichtig
+        if not hostguard.host_allowed(request.headers.get("host"), extra_hosts):
+            log.warning("Anfrage mit unbekanntem Rechnernamen abgewiesen: %r", request.headers.get("host"))
+            return JSONResponse({"detail": "Unbekannter Rechnername. Falls die Seite absichtlich unter diesem Namen läuft: "
+                                           "in config.toml unter [server] allowed_hosts eintragen."}, status_code=403)
+        if request.url.path.startswith("/api/") and hostguard.cross_site(request.headers, extra_hosts):
+            return JSONResponse({"detail": "Anfrage von einer fremden Webseite abgewiesen."}, status_code=403)
         if auth.enabled and not auth.allowed(request.url.path) and not auth.valid(request.cookies.get(authmod.COOKIE)):
             return JSONResponse({"detail": "Nicht angemeldet."}, status_code=401)
         return await call_next(request)
@@ -91,6 +101,11 @@ def create_app(rt: Runtime) -> FastAPI:
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
+        # Browser erlauben WebSockets zu jeder Adresse: ohne diese Prüfung könnte jede fremde Seite die Live-Daten mitlesen
+        if (not hostguard.host_allowed(ws.headers.get("host"), extra_hosts)
+                or hostguard.cross_site(ws.headers, extra_hosts)):
+            await ws.close(code=1008)
+            return
         if auth.enabled and not auth.valid(ws.cookies.get(authmod.COOKIE)):
             await ws.close(code=1008)
             return
