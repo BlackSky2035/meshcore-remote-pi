@@ -56,3 +56,7 @@ auto_min_gap_s = 15
 auto_max_per_hour = 30
 # Pause zwischen zwei Repeatern bei „Jetzt abfragen“ auf der Akku-Seite (Sekunden). Schont die Stromversorgung des Pi (Spannungsabfall beim Senden).
 battery_poll_gap_s = 20
+# Funkaktionen von Hand (Nachricht, Kanal, Advert, Ping, Abfragen): Mindestabstand und Obergrenze je Minute.
+# Zu schnell → Meldung „Zu schnell – bitte … s warten“, es wird nichts gesendet. Repeater-Verwaltung hat ihr eigenes Tempo.
+manual_min_gap_s = 2
+manual_max_per_min = 20

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import repeater as R
+from app.repeater import RepeaterError, classify
 from app.config import Settings
 from app.node import NodeError
 from app.node.real import RealNode
@@ -312,3 +313,31 @@ async def test_auto_relogin_waits_before_sending_the_command(adm, rt):
     rt.node.repeater_login, rt.node.repeater_command = login, cmd
     assert (await adm.command(REPEATER_OK, "ver"))["ok"]
     assert [k for k, _ in sends] == ["login", "cmd"] and sends[1][1] - sends[0][1] >= R.MIN_GAP_S
+
+
+# ---- Wortanfang reicht: angehängte Zeichen umgehen die Sperren nicht (Firmware vergleicht teils nur den Anfang) ----
+@pytest.mark.parametrize("cmd", ["erase!", "erasex", "ERASE now", "get prv.key!", "set prv.key00", "get  prv.key"])
+def test_blocked_commands_cannot_be_bypassed_with_suffixes(cmd):
+    with pytest.raises(RepeaterError, match="gesperrt"):
+        classify(cmd)
+
+
+@pytest.mark.parametrize("cmd", ["rebootnow", "reboot!", "poweroff1", "shutdown-now", "set tx99", "passwordx", "region put x", "set repeatoff"])
+def test_risky_commands_with_suffixes_still_need_confirmation(cmd):
+    assert classify(cmd)["risky"], cmd
+
+
+def test_harmless_commands_stay_harmless():
+    for cmd in ("set txdelay 0.5", "set direct.txdelay 0.2", "get tx", "set repeat on", "ver", "get name", "set name Hügel"):
+        assert not classify(cmd)["risky"], cmd
+
+
+def test_invisible_characters_are_rejected():
+    for cmd in ("set prv.key​ 00", "erase​", "re­boot"):
+        with pytest.raises(RepeaterError):
+            classify(cmd)
+
+
+def test_no_reply_and_secret_also_match_by_prefix():
+    assert classify("rebootnow")["no_reply"] is True
+    assert classify("password! neu")["secret"] is True

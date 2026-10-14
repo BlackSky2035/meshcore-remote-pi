@@ -1,5 +1,5 @@
 import {get, post, del} from '../lib/api.js';
-import {esc, ago, typeLabel, TYPE_COLOR, pathLabel, fmtTime, debounce, mentions} from '../lib/util.js';
+import {esc, ago, typeLabel, TYPE_COLOR, pathLabel, fmtTime, debounce, mentions, locked, countLabel} from '../lib/util.js';
 
 const FILTERS = [['all', 'Alle'], ['client', 'Clients'], ['repeater', 'Repeater'], ['room', 'Rooms'], ['sensor', 'Sensoren']];
 
@@ -128,14 +128,14 @@ export async function mount(root, ctx) {
   // ---- Kontakt hinzufügen / Karten ----------------------------------------
   $('addBtn').onclick = () => { $('cardText').value = ''; $('addError').textContent = ''; $('dlgAdd').showModal(); };
   $('addCancel').onclick = () => $('dlgAdd').close();
-  $('addOk').onclick = async () => {
+  $('addOk').onclick = locked($('addOk'), async () => {
     try {
       await post('/api/contacts/import', {card: $('cardText').value.trim()});
       if (!alive) return;
       $('dlgAdd').close();
       await load();
     } catch (e) { if (alive) $('addError').textContent = e.message; }
-  };
+  });
 
   function showCard(title, uri) {
     $('cardTitle').textContent = title;
@@ -177,9 +177,9 @@ export async function mount(root, ctx) {
 
   const chatMax = Number($('chatText').maxLength);
   const updateChatCount = () => {
-    const n = $('chatText').value.length;
-    $('chatCount').textContent = `${n} / ${chatMax}`;
-    $('chatCount').classList.toggle('err', n >= chatMax);
+    const c = countLabel($('chatText').value, chatMax);
+    $('chatCount').textContent = c.text;
+    $('chatCount').classList.toggle('err', c.warn);
   };
   $('chatText').oninput = updateChatCount;
   updateChatCount();

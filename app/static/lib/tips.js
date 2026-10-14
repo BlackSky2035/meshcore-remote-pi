@@ -48,7 +48,7 @@ const TIPS = [
   ['#editBtn', 'Name oder Schlüssel des Kanals ändern. Ein neuer Schlüssel leert den Verlauf.'],
   ['#delBtn', 'Löscht den Kanal vom Node und den gespeicherten Verlauf.'],
   ['#detailToggle', 'Zeigt bei diesem Kanal den Funkweg eingehender Nachrichten und die gehörten Wiederholungen eigener Nachrichten. Gespeichert wird immer.'],
-  ['#chatText', 'Nachricht eingeben. Doppelklick auf eine fremde Nachricht fügt @[Name] ein; beim Senden kommt die Uhrzeit dieser Nachricht dazu, wenn Platz ist.'],
+  ['#chatText', 'Nachricht eingeben. Doppelklick auf eine fremde Nachricht fügt @[Name] ein. Unter dem Feld stehen Zeichen und – bei Umlauten/Emojis – die Byte-Zahl (Funk zählt Byte).'],
   ['#chatSend', 'Sendet die Nachricht in den Kanal; alle im Kanal sehen sie.'],
   ['#fName', 'Namen mit # am Anfang (z. B. #test) erzeugen den Schlüssel automatisch aus dem Namen.'],
   ['#fSecret', 'Geheimer Schlüssel (32 Hex-Zeichen). Leer lassen für Hashtag-Kanäle.'],

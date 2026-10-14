@@ -18,7 +18,7 @@ const realFetch = globalThis.fetch;
 // fetchHook(url): für Wettlauf-Tests Antworten verzögern oder ersetzen (Rückgabe Response = ersetzt, sonst echter Server)
 let fetchHook = null;
 globalThis.fetch = async (u, o) => {
-  if (fetchHook) { const r = await fetchHook(String(u)); if (r) return r; }
+  if (fetchHook) { const r = await fetchHook(String(u), o); if (r) return r; }
   return realFetch(new URL(u, BASE), o);
 };
 const fake = (data, ms = 0) => new Promise(r => setTimeout(() => r(new Response(JSON.stringify(data), {status: 200, headers: {'content-type': 'application/json'}})), ms));
@@ -454,8 +454,10 @@ const status = await (await fetch('/api/status')).json();
   check(root.querySelectorAll('#form [name=channels]').length >= 1, 'Auto-Antwort bietet Kanäle an');
   root.querySelector('#form [name=match]').value = 'status?';
   root.querySelector('#form [name=reply]').value = 'alles ok bei {name}';
-  click(root.querySelector('#save')); await sleep(500);
+  click(root.querySelector('#save')); click(root.querySelector('#save'));      // Doppelklick
+  await sleep(500);
   check(root.querySelector('#rules').textContent.includes('status?'), 'Regel in Liste');
+  check((await (await fetch('/api/rules')).json()).filter(r => r.config.match === 'status?').length === 1, 'Doppelklick auf „Speichern“ legt die Regel nur einmal an');
 
   // Akku-Regel mit Ziel „Alle Repeater“ und zu kurzem Intervall → Serverfehler wird angezeigt
   root.querySelector('#newKind').value = 'battery_poll';
@@ -630,6 +632,39 @@ const status = await (await fetch('/api/status')).json();
   click(root.querySelector('#mnReboot')); await sleep(300);
   check(root.querySelector('#mnMsg').textContent.includes('Neustart ausgelöst'), 'Neustart nach Bestätigung');
   un();
+}
+
+// ---- Mein Node: Wert vom Node passt zu keiner Auswahl → nie stillschweigend die erste Option speichern
+{
+  const real = await (await fetch('/api/node/settings')).json();
+  const odd = {...real, settings: {...real.settings, radio_bw: 41.667}};
+  let putBody = null;
+  fetchHook = (u, o) => u.startsWith('/api/node/settings') && (!o || !o.method || o.method === 'GET') ? fake(odd)
+    : u.startsWith('/api/node/settings') && o && o.method === 'PUT' ? (putBody = JSON.parse(o.body), fake(odd)) : null;
+  const root = fresh();
+  const un = await (await imp('pages/mynode.js')).mount(root, ctx(status));
+  await sleep(400);
+  const bw = root.querySelector('[data-key="radio_bw"]');
+  check(bw.value === '' && bw.selectedOptions[0].textContent.includes('unbekannt (41.667)'), 'Unbekannte Bandbreite wird als „unbekannt“ gezeigt, nicht als erste Option');
+  root.querySelector('[data-key="tx_power"]').value = '15';
+  click(root.querySelector('[data-save="Funk"]')); await sleep(300);
+  check(putBody && putBody.changes.tx_power === '15' && !('radio_bw' in putBody.changes) && !('radio_freq' in putBody.changes),
+        'Nur die Sendeleistung wird geschrieben, die unbekannte Bandbreite bleibt unangetastet');
+  fetchHook = null;
+  un();
+}
+
+// ---- Zähler unter dem Eingabefeld zeigt bei Umlauten/Emojis die Byte-Zahl
+{
+  const U = await imp('lib/util.js');
+  check(U.countLabel('hallo', 139).text === '5 / 139', 'Zähler: reiner ASCII-Text ohne Byte-Angabe');
+  check(U.countLabel('Grüße 👍', 139).text === '8 / 139 · 12 Byte', 'Zähler: Umlaute und Emojis zeigen die Byte-Zahl');
+  check(U.countLabel('ü'.repeat(100), 139).warn === true, 'Zähler warnt, wenn die Byte-Zahl die Grenze überschreitet');
+  let calls = 0;
+  const btn = window.document.createElement('button');
+  const f = U.locked(btn, async () => { calls++; await sleep(50); });
+  f(); f(); await sleep(80); f(); await sleep(80);
+  check(calls === 2 && !btn.disabled, 'Doppelklick-Schutz: zweiter Klick während des Laufs wird ignoriert');
 }
 
 // ---- Netz, Sensoren, Funk

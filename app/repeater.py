@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from collections import deque
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -32,6 +33,8 @@ MAX_COMMAND_BYTES = 150
 MIN_GAP_S = 2.0
 HISTORY = 100
 NO_REPLY = ("reboot", "poweroff", "shutdown", "clkreboot")
+NOT_RISKY = ("set txdelay",)                                         # beginnt mit „set tx“, ist aber nur die Sendeverzögerung
+_INVISIBLE = {"Cf", "Zs", "Zl", "Zp", "Cc", "Co", "Cn"}               # unsichtbare/Format-Zeichen (Zero-Width, NBSP …)
 BLOCKED = ("erase", "set prv.key", "get prv.key")                    # Werkseinstellung/Identitätsschlüssel: nie per Funk
 SECRET_PREFIXES = ("password", "set guest.password", "get guest.password")   # lesen: Antwort enthält das Gast-Passwort
 RISKY: tuple[tuple[str, str], ...] = (
@@ -122,15 +125,21 @@ def classify(cmd: str) -> dict:
     cmd = " ".join(raw.split())
     if len(cmd.encode("utf-8")) > MAX_COMMAND_BYTES:
         raise RepeaterError(f"Befehl zu lang (höchstens {MAX_COMMAND_BYTES} Byte)")
+    if any(ch != " " and unicodedata.category(ch) in _INVISIBLE for ch in cmd):
+        raise RepeaterError("Der Befehl enthält unsichtbare Sonderzeichen (z. B. geschütztes Leerzeichen)")
     low = _norm(cmd)
+    # Reiner Wortanfang, OHNE Leerzeichen danach: die Firmware vergleicht Befehle teils nur am Anfang (memcmp), dann wirkt
+    # „erase!“ wie „erase“ und „rebootnow“ wie „reboot“. Früher galt nur „erase“ oder „erase …“ – mit angehängten Zeichen
+    # rutschte ein gesperrter/riskanter Befehl als harmlos durch.
     for b in BLOCKED:
-        if low == b or low.startswith(b + " "):
+        if low.startswith(b):
             raise RepeaterError(f"„{b}“ ist über Funk gesperrt (nur am Gerät per USB-Kabel möglich).")
-    risky = next((why for prefix, why in RISKY if low == prefix or low.startswith(prefix + " ")), None)
+    risky = next((why for prefix, why in RISKY
+                  if low.startswith(prefix) and not any(low.startswith(ok) for ok in NOT_RISKY)), None)
     if low == "set repeat on":
         risky = None                                              # nur genau das Einschalten ist harmlos
-    secret = any(low == p or low.startswith(p + " ") for p in SECRET_PREFIXES)
-    no_reply = any(low == p for p in NO_REPLY)
+    secret = any(low.startswith(p) for p in SECRET_PREFIXES)
+    no_reply = any(low.startswith(p) for p in NO_REPLY)
     return {"command": cmd, "risky": risky, "secret": secret, "no_reply": no_reply}
 
 

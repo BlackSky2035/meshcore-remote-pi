@@ -45,7 +45,10 @@ def create_app(rt: Runtime) -> FastAPI:
             await rt.automation.start()
         except Exception as e:
             log.exception("Automatik konnte nicht starten")
+            rt.automation.paused = True            # Auto-Antworten laufen ohne Zeitplan weiter: lieber still als ungewollt senden
             rt.state["problems"].append(f"Automatik nicht gestartet: {type(e).__name__}: {e}")
+        if rt.automation.start_note:
+            rt.state["problems"].append(rt.automation.start_note)
         task = asyncio.create_task(Supervisor(rt).run())
         stats_task = asyncio.create_task(rt.stats.run()) if rt.stats else None
         room_task = asyncio.create_task(rt.room.run()) if rt.room else None

@@ -82,7 +82,7 @@ async def test_channel_unreadable_after_retries_raises_instead_of_hiding_it():
     async def always_none(idx):
         return None if idx == 2 else await FakeCommands.get_channel(n.mc.commands, idx)
     n.mc.commands.get_channel = always_none
-    with pytest.raises(NodeError, match="Kanal 2"):
+    with pytest.raises(NodeError, match="Kanalplätze 2 "):
         await n.channels()
 
 
@@ -126,7 +126,7 @@ async def test_new_connection_reads_channels_fresh_again():
     n = make({0: ("Public", b"\x01" * 16)})
     await n.channels()
     assert len(n.mc.commands.get_calls) == 4
-    n._channels_cache = None                # das macht connect() bei jeder neuen Verbindung
+    n.invalidate_channels()                 # das macht connect() bei jeder neuen Verbindung (alles vergessen)
     await n.channels()
     assert len(n.mc.commands.get_calls) == 8
 
@@ -222,3 +222,45 @@ async def test_channel_name_table_follows_set_and_remove():
     assert n._chan_idx_by_name == {"Familie": 1}
     await n.remove_channel(1)
     assert n._chan_idx_by_name == {}
+
+
+# ---- stummer Platz: nicht alles neu lesen, nicht minutenlang blockieren -------------------------------------------------
+async def test_silent_slot_does_not_force_rereading_all_slots(monkeypatch):
+    n = make({0: ("Public", b"\x01" * 16), 3: ("#test", derive_secret("#test"))})
+    now = [100.0]
+    monkeypatch.setattr("app.node.real.time.monotonic", lambda: now[0])
+    real_get = n.mc.commands.get_channel
+    silent = {2}
+
+    async def maybe_silent(idx):
+        return None if idx in silent else await real_get(idx)
+    n.mc.commands.get_channel = maybe_silent
+    with pytest.raises(NodeError, match="Kanalplätze 2 "):
+        await n.channels()
+    assert n._chan_idx_by_name == {"Public": 0, "#test": 3}          # gelesene Plätze sind trotzdem bekannt (Wiederholungen)
+    calls = len(n.mc.commands.get_calls)
+    with pytest.raises(NodeError, match="neuer Versuch"):              # innerhalb der Wartezeit: sofort, ohne den Node zu fragen
+        await n.channels()
+    assert len(n.mc.commands.get_calls) == calls
+    now[0] += n.CHANNELS_RETRY_S + 1
+    silent.clear()
+    chans = await n.channels()                                        # jetzt nur noch Platz 2 nachlesen
+    assert [c["idx"] for c in chans] == [0, 3]
+    assert n.mc.commands.get_calls[calls:] == [2]
+
+
+async def test_reading_channels_has_an_overall_time_limit(monkeypatch):
+    """Viele stumme Plätze: höchstens CHANNELS_TOTAL_S je Aufruf, der Rest kommt später dran (Befehlssperre nicht minutenlang belegt)."""
+    n = make({})
+    now = [0.0]
+    monkeypatch.setattr("app.node.real.time.monotonic", lambda: now[0])
+
+    async def slow_none(idx):
+        now[0] += 20                                                   # jede Abfrage „dauert“ 20 s
+        return None
+    n.mc.commands.get_channel = slow_none
+    n.CHANNEL_RETRY_DELAY_S = 0
+    with pytest.raises(NodeError) as e:
+        await n.channels()
+    assert now[0] == 60                                                # Platz 0 (3 Versuche à 20 s), danach Frist um: keine weiteren angefangen
+    assert "0, 1, 2, 3" in str(e.value)

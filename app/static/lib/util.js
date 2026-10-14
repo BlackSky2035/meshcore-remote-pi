@@ -90,3 +90,25 @@ export function sparkline(points, {width = 360, height = 80, color = '#1f6feb', 
     <path d="${d}" fill="none" stroke="${color}" stroke-width="2"/></svg>
     <div class="muted small">${Math.round(lo)} – ${Math.round(hi)} mV · zuletzt ${Math.round(ys[ys.length - 1])} mV ≈ ${batteryPct(ys[ys.length - 1])} %</div>`;
 }
+
+// Doppelklick-Schutz: solange `fn` läuft, ist der Knopf gesperrt und weitere Klicks werden ignoriert
+// (sonst legte z. B. ein Doppeltippen auf „Speichern“ eine Regel doppelt an).
+export function locked(btn, fn) {
+  return async (...args) => {
+    if (!btn || btn.dataset.busy) return;
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    try { return await fn(...args); }
+    finally { delete btn.dataset.busy; btn.disabled = false; }
+  };
+}
+
+// Zähler unter dem Eingabefeld: Zeichen und – wenn anders – Byte. Funk zählt Byte (UTF-8): Umlaute 2, Emojis 4.
+// Die genaue Grenze der Firmware ist noch nicht an echter Hardware geprüft; über `max` Byte wird nur gewarnt.
+export function utf8Len(text) {
+  return new TextEncoder().encode(String(text ?? '')).length;
+}
+export function countLabel(text, max) {
+  const t = String(text ?? '').trim(), n = t.length, b = utf8Len(t);
+  return {text: `${n} / ${max}` + (b !== n ? ` · ${b} Byte${b > max ? ' – evtl. zu lang für den Funk' : ''}` : ''), warn: n >= max || b > max};
+}

@@ -125,6 +125,12 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit. Die Automatik schützt e
   Abkühlzeit je Absender.
 - **Pause-Schalter** in der Oberfläche, bleibt über Neustarts erhalten.
 - **Intervall gilt auch über Neustarts:** Jede Regel merkt sich, wann sie zuletzt lief. Nach einem Update, Neustart oder wenn du eine Regel bearbeitest bzw. aus- und einschaltest, wird nicht sofort gesendet, sondern frühestens ein Intervall nach dem letzten Lauf. Pingen zwei aktive Regeln denselben Kanal, weist die Regelliste darauf hin.
+- **Tempolimit auch von Hand:** Nachricht, Kanalnachricht, Advert, Ping und „Abfragen“ aus der Oberfläche gehen höchstens alle 2 s und
+  höchstens 20 Funkpakete je Minute (`[automation] manual_min_gap_s`, `manual_max_per_min`). Zu schnell → „Zu schnell – bitte … s warten“, es wird nichts gesendet.
+- **Raum-Bot mit eigenem Anteil:** Der Raum darf höchstens ein Drittel des Stunden-Sendebudgets nutzen (bei 30/h also 10 Plätze; eine bestätigte
+  Zustellung bucht 3). Akku-Überwachung und Pings fallen dadurch nicht mehr aus, wenn im Raum viel los ist; Raum-Beiträge kommen dann verzögert.
+  Auf unbekannte Befehle antwortet der Raum höchstens einmal je Stunde und Mitglied mit der Hilfe.
+- **Temperatur kostet nur Budget, wenn gefunkt wird:** Repeater ohne Sensor (24-h-Pause) verbrauchen keinen Platz im Sendebudget mehr.
 - **Jede automatische Sendung steht im Protokoll** (Kanal-Ping, Ping mit Antwortzeit, Akku-Abfrage, Advert), dazu nach jedem Start, Bearbeiten oder Einschalten die Planung: „Regel „…“ geplant: nächster Lauf in 15 min (Intervall seit dem letzten Lauf noch nicht um)“ bzw. „(Startverzögerung)“. So lässt sich nachvollziehen, warum und wann gesendet wurde.
 
 Regeln:
@@ -155,6 +161,7 @@ Worauf es auf dem Pi ankommt:
   **„Nachbarn suchen“** (bei den Schnellaktionen) schickt dem Repeater den Befehl `discover.neighbors`; seine Antwort steht im Terminal. **„Nachbarn anzeigen“** (weiter unten) fragt dagegen die Nachbarliste ab,
   die der Repeater schon kennt, und zeigt sie als Tabelle (Name, zuletzt gehört, SNR; höchstens 15 Einträge). Was der Repeater auf „Nachbarn suchen“ antwortet, hängt von seiner Firmware ab.
   Riskante Befehle (Neustart, Funkparameter, Passwort …) fragen vorher nach; Werkseinstellung und Identitätsschlüssel sind gesperrt.
+  Erkannt wird schon der Wortanfang (`erase!`, `rebootnow` …), weil die Firmware Befehle teils nur am Anfang vergleicht; unsichtbare Sonderzeichen werden abgelehnt.
   Jeder Schritt geht per Funk und kann dauern. Das Passwort wird nur auf Wunsch gemerkt (eigene Datei, nicht in der Datenbank).
   Die Standardfunktionen sind an einem echten Repeater getestet und gehen; nicht jedes Detail wurde geprüft (z. B. nicht jede Einstellung, Nachbarn- und Zugriffslisten-Abfrage).
 - **USB-Überwachung:** Das Programm erkennt den Node selbst (auch nach dem Umstecken, auch wenn der Gerätename wechselt),
@@ -262,6 +269,13 @@ Einzelne Fehler sollen nie das ganze Programm beenden; stattdessen gibt es eine 
 - Startet die Automatik nicht, läuft die Oberfläche trotzdem; der Grund steht als Hinweis dort.
 - Fehler in Event-Listenern, in einzelnen Regeln und im Zeitplan werden protokolliert und stoppen nichts. Ein hängender Browser
   (WebSocket) blockiert nach 5 s niemanden mehr. Bei Verbindungsverlust versucht der Supervisor die Verbindung mit wachsendem Abstand (3 s bis 30 s) neu aufzubauen.
+- **Datenbank fällt aus:** Eingehende Nachrichten lösen trotzdem Auto-Antwort, Push, Stichwort-Meldung und Raum aus (nur der Verlauf fehlt).
+  Ist der gespeicherte Pausenzustand nicht lesbar (Datenbank kaputt, nur Arbeitsspeicher), startet die Automatik **pausiert** und zeigt einen Hinweis –
+  sie sendet nach einem Datenbankschaden also nie ungewollt. Bei Bedarf von Hand fortsetzen.
+- **Live-Anzeige wird nicht „taub“:** Hängt das Senden an einen Browser (schlechter Empfang), trennt der Server die Verbindung, damit der Browser neu verbindet.
+- **Stummer Kanalplatz:** Antwortet ein einzelner Kanalplatz nicht, werden die übrigen trotzdem gelesen und gemerkt; nur der stumme wird frühestens
+  nach 60 s erneut gefragt, je Versuch höchstens 45 s lang. Solange er fehlt, meldet die Kanalliste einen Fehler statt einer unvollständigen Liste
+  (ein belegter Platz soll nie als frei erscheinen).
 - **Hängender Node:** Der Herzschlag (alle 30 s) erkennt eine hängende Firmware auch dann, wenn ständig Befehle anstehen (z. B. weil die Seite
   offen ist und alle 15 s den Status abfragt): Ein laufender Befehl zählt nur als Lebenszeichen, wenn der Node in den letzten 90 s
   irgendetwas geschickt hat. Nach zwei verpassten Herzschlägen wird neu verbunden. Nur im Simulator/mit nachgebauter Bibliothek getestet.
@@ -387,6 +401,8 @@ Läuft nach Aussage des Entwicklers auf einem Raspberry Pi 3 B mit Heltec V4 (US
 Seite „Mein Node“: Name, Standort, Funkwerte (Frequenz, Bandbreite, Spreizfaktor, Coding Rate), Sendeleistung, Datenschutz (Standort in Adverts,
 Telemetrie), Kontakte-Verhalten, Pfad-Kennung, Uhr abgleichen und Neustart. Riskante Änderungen fragen vorher nach. Privatschlüssel und
 Werkseinstellung gibt es bewusst nicht (dafür die MeshCore-App am Kabel nutzen). Funkwerte aus der MeshCore-App/deiner örtlichen Gruppe übernehmen.
+Passt ein Wert vom Node zu keiner Auswahl (z. B. Bandbreite 41.667 statt 41.7), steht im Feld „unbekannt (Wert) – nicht ändern“; er wird beim Speichern
+nie stillschweigend durch die erste Auswahl ersetzt.
 Die Standardfunktionen laufen am echten Node; nicht jede einzelne Einstellung wurde geprüft.
 
 ## Weitere Funktionen

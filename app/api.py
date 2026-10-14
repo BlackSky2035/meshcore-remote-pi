@@ -20,6 +20,7 @@ from .network import build_graph
 from .stats import derive
 from .nodeconfig import ConfigError, NeedsConfirm as CfgNeedsConfirm, spec as nodecfg_spec
 from .repeater import NeedsConfirm, RepeaterError, catalog as repeater_catalog
+from .ratelimit import ManualLimit
 from .runtime import Runtime
 from .node.base import check_channel
 from .schemas import (
@@ -58,6 +59,15 @@ def make_router(rt: Runtime) -> APIRouter:
 
     def wrap(e: NodeError) -> HTTPException:
         return HTTPException(status_code=502, detail=str(e))
+
+    manual = ManualLimit(max(0.0, min(float(rt.settings.manual_min_gap_s), 60.0)),
+                         max(1, min(int(rt.settings.manual_max_per_min), 10_000)))
+
+    def radio(n: int = 1) -> None:
+        """Vor jeder Funkaktion von Hand: zu schnell → 429, es wird nichts gesendet."""
+        wait = manual.take(n)
+        if wait > 0:
+            raise HTTPException(status_code=429, detail=f"Zu schnell – bitte {max(1, round(wait))} s warten (Schutz des Funknetzes).")
 
     # ---- Allgemein -------------------------------------------------------
     @r.get("/health")
@@ -280,6 +290,7 @@ def make_router(rt: Runtime) -> APIRouter:
     @r.post("/sensors/{public_key}/read")
     async def sensors_read(public_key: str) -> dict:
         key = _key(public_key)
+        radio()
         try:
             tel = await node.repeater_telemetry(key)
         except NodeError as e:
@@ -364,6 +375,7 @@ def make_router(rt: Runtime) -> APIRouter:
     # ---- Nachrichten -----------------------------------------------------
     @r.post("/message")
     async def send_message(m: Message) -> dict:
+        radio()
         try:
             result = await node.send_message(m.to, m.text)
         except NodeError as e:
@@ -373,6 +385,7 @@ def make_router(rt: Runtime) -> APIRouter:
 
     @r.post("/channel")
     async def send_channel(m: ChannelMessage) -> dict:
+        radio()
         try:
             result = await node.send_channel_message(m.channel, m.text)
         except NodeError as e:
@@ -513,6 +526,7 @@ def make_router(rt: Runtime) -> APIRouter:
 
     @r.post("/advert")
     async def advert(a: Advert) -> dict:
+        radio()
         try:
             return await node.send_advert(a.flood)
         except NodeError as e:
@@ -660,15 +674,19 @@ def make_router(rt: Runtime) -> APIRouter:
 
     @r.post("/nodes/{public_key}/poll")
     async def poll(public_key: str, body: PollRequest | None = None) -> dict:
+        key, temp = _key(public_key), bool(body and body.temperature)
+        radio(2 if temp else 1)
         try:
-            return await auto.poll_node(_key(public_key), temperature=bool(body and body.temperature))
+            return await auto.poll_node(key, temperature=temp)
         except NodeError as e:
             raise wrap(e)
 
     @r.post("/nodes/{public_key}/ping")
     async def ping(public_key: str, body: PingRequest) -> dict:
+        key = _key(public_key)
+        radio()
         try:
-            return await auto.ping_node(_key(public_key), body.mode)
+            return await auto.ping_node(key, body.mode)
         except NodeError as e:
             raise wrap(e)
 

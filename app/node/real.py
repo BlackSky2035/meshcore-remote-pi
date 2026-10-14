@@ -79,6 +79,9 @@ class RealNode(BaseNode):
         self._max_channels: int | None = None
         self._chan_idx_by_name: dict[str, int] = {}
         self._channels_cache: list[dict] | None = None
+        self._chan_known: dict[int, dict | None] = {}   # schon gelesene Plätze (None = leer), auch bei unvollständiger Liste
+        self._chan_failed: list[int] = []                # Plätze ohne Antwort beim letzten Versuch
+        self._chan_retry_at = 0.0                        # monotone Zeit: vorher stumme Plätze nicht erneut abfragen
         self.port = None
         self._rep_lock = asyncio.Lock()          # nur ein Repeater-Befehl gleichzeitig (Antworten sonst nicht zuordenbar)
         self._cmd_lock = asyncio.Lock()          # nur ein Befehl an den Node gleichzeitig, siehe _locked()
@@ -136,6 +139,7 @@ class RealNode(BaseNode):
 
         self._EventType = EventType
         self._channels_cache = None         # neue Verbindung: Kanäle einmal frisch lesen, nicht die alte Liste wiederverwenden
+        self._chan_known, self._chan_failed, self._chan_retry_at = {}, [], 0.0
         self._chan_idx_by_name = {}
         self._max_channels = None           # Werte des Geräts: am selben Anschluss kann jetzt ein anderer Node hängen
         self._battery = None
@@ -339,6 +343,8 @@ class RealNode(BaseNode):
     CHANNEL_RETRY_DELAY_S = 0.3
     CHANNEL_TIMEOUT_S = 3.0          # je Abfrage eines Platzes (lokal über USB, eigentlich sofort)
     CONNECT_CHANNELS_S = 15.0        # alle Plätze beim Verbinden zusammen, bleibt unter STEP_TIMEOUT_S des Supervisors
+    CHANNELS_TOTAL_S = 45.0          # höchstens so lange je Aufruf von channels() lesen (hält die Befehlssperre!)
+    CHANNELS_RETRY_S = 60.0          # stumme Plätze frühestens nach dieser Zeit erneut abfragen
 
     @_locked
     async def max_channels(self) -> int:
@@ -377,24 +383,48 @@ class RealNode(BaseNode):
     async def channels(self) -> list[dict]:
         """Wird nur einmal pro Verbindung wirklich vom Node gelesen (`connect()` leert den
         Zwischenspeicher); danach kommen weitere Aufrufe aus dem Speicher. `set_channel`/`remove_channel`
-        halten den Zwischenspeicher selbst aktuell, indem sie nur den geänderten Platz neu lesen."""
+        halten den Zwischenspeicher selbst aktuell, indem sie nur den geänderten Platz neu lesen.
+        Ein stummer Platz lässt nicht mehr die ganze Liste scheitern und alles wieder von vorn lesen: gelesene Plätze bleiben
+        gemerkt (`_chan_known`), nur die stummen werden später erneut gefragt – frühestens nach CHANNELS_RETRY_S, je Aufruf
+        höchstens CHANNELS_TOTAL_S lang. Solange ein Platz fehlt, gibt es weiter einen Fehler (eine Teil-Liste könnte einen
+        belegten Platz als frei erscheinen lassen und beim Anlegen überschrieben werden)."""
         self._require()
         if self._channels_cache is not None:
             return list(self._channels_cache)
-        out = []
-        for idx in range(await self._max_channels_impl()):
-            res = await self._get_channel(idx)
+        top = await self._max_channels_impl()
+        now = time.monotonic()
+        if self._chan_failed and now < self._chan_retry_at:
+            raise NodeError(f"Kanalplätze {', '.join(map(str, self._chan_failed))} antworten nicht – "
+                            f"neuer Versuch in {int(self._chan_retry_at - now) + 1} s")
+        deadline = now + self.CHANNELS_TOTAL_S
+        failed: list[int] = []
+        for idx in range(top):
+            if idx in self._chan_known:
+                continue
+            if time.monotonic() > deadline:
+                failed.append(idx)
+                continue
+            try:
+                res = await self._get_channel(idx)
+            except NodeError:
+                failed.append(idx)
+                continue
             p = res.payload
             name, secret = p.get("channel_name") or "", bytes(p.get("channel_secret") or b"")
-            if not name and not any(secret):
-                continue
-            out.append(normalize_channel(idx, name, secret))
-        self._chan_idx_by_name = {c["name"]: c["idx"] for c in out}
+            self._chan_known[idx] = normalize_channel(idx, name, secret) if name or any(secret) else None
+        out = [c for i, c in sorted(self._chan_known.items()) if c is not None and i < top]
+        self._chan_idx_by_name = {c["name"]: c["idx"] for c in out}      # auch bei Teil-Liste: Wiederholungen zuordnen
+        if failed:
+            self._chan_failed, self._chan_retry_at = failed, time.monotonic() + self.CHANNELS_RETRY_S
+            raise NodeError(f"Kanalplätze {', '.join(map(str, failed))} antworten nicht (die übrigen sind gelesen) – "
+                            f"neuer Versuch in {int(self.CHANNELS_RETRY_S)} s")
+        self._chan_failed = []
         self._channels_cache = out
         return list(out)
 
     def invalidate_channels(self) -> None:
         self._channels_cache = None
+        self._chan_known, self._chan_failed, self._chan_retry_at = {}, [], 0.0
 
     @_locked
     async def set_channel(self, idx: int, name: str, secret: bytes | None) -> dict:
@@ -419,6 +449,9 @@ class RealNode(BaseNode):
         ch = normalize_channel(idx, got_name, got_secret) if got_name or any(got_secret) else None
         if ch:
             self._chan_idx_by_name[got_name] = idx
+        self._chan_known[idx] = ch
+        if idx in self._chan_failed:
+            self._chan_failed.remove(idx)
         if self._channels_cache is not None:
             self._channels_cache = [c for c in self._channels_cache if c["idx"] != idx] + ([ch] if ch else [])
         return ch or normalize_channel(idx, "", bytes(16))

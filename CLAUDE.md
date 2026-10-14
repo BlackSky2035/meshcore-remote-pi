@@ -125,6 +125,14 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit (EU-Bänder: Duty Cycle).
 - Akku-Seite: bis zu 3 Repeater (Plätze „Repeater 1–3“, je Platz feste Farbe `--c-batt/2/3`, alle Linien durchgezogen (`SHAPES` in `pages/battery.js`; gestrichelt wirkte abgehackt), identisch in Akku- UND Temperatur-Diagramm); die Auswahl (`battery_selection` in `settings`, Liste mit 3 Plätzen) wird beim Ändern gespeichert (`PUT /api/battery/selection`; alter `battery_default_node`/`battery_compare_node` dient als Ersatz, wenn noch nichts gespeichert ist). Unter jedem Feld steht der letzte Wert. Die Tabelle zeigt je einen Repeater, umgeschaltet über Reiter (`#tableTabs`, gleiche Farbe wie im Diagramm); die CSV gehört zum gewählten Reiter. „Jetzt abfragen“ geht Repeater für Repeater mit Pause `battery_poll_gap_s` (Standard 20 s, Obergrenze 300 s) dazwischen, in `pages/battery.js`: nie mehrere Funkabfragen unmittelbar hintereinander (Spannungsabfall am Pi). Tests: `tests/test_battery.py`, UI-Smoke „Akku-Seite“.
 - Auto-Antwort: Limit je Regel `max_per_hour` (rollend 60 min, synchron reserviert) und Pause je Person;
   gilt für Direktnachrichten und Kanäle.
+- Funk von Hand (`ratelimit.py`, `ManualLimit`, in `api.py` `radio(n)` vor `/message`, `/channel`, `/advert`, `/nodes/*/poll` (mit Temperatur 2), `/nodes/*/ping`, `/sensors/*/read`):
+  Mindestabstand `manual_min_gap_s` (2 s) und `manual_max_per_min` (20), sonst 429 ohne Senden. Repeater-Verwaltung nicht (eigenes `_radio_slot`). Tests lockern über
+  `conftest.py` (rt-Settings 0/10000); UI-Rauchtest-Server mit `MC_MANUAL_MIN_GAP_S=0 MC_MANUAL_MAX_PER_MIN=10000` starten. Tests: `tests/test_ratelimit.py`.
+- Raum-Teilbudget (`room.py`): höchstens `max_per_hour // ROOM_SHARE` (3) Plätze je Stunde (mindestens `CONFIRM_TX_MAX`), eigene Zählung `_room_sent`;
+  unbekannte Befehle → Hilfe höchstens 1× je Stunde und Mitglied (`UNKNOWN_HELP_S`). Tests: `tests/test_room.py`.
+- Temperatur bucht den Budget-Platz erst unmittelbar vor `repeater_telemetry` (`poll_node(..., budget=)`), nicht bei 24-h-Pause oder gescheitertem Status.
+- Pausiert starten: `Automation.start` liest `automation_paused`; nicht lesbar oder RAM-Rückfall (`start_paused`, gesetzt in `build()`) → pausiert + `start_note` (Hinweis in `problems`);
+  scheitert `start()` ganz, setzt `main.py` `paused = True`. Tests: `tests/test_robustness.py`.
 
 ## Stand
 Fertig und im Simulator getestet (pytest und UI-Rauchtest):
@@ -166,6 +174,9 @@ liefert `bat` in mV, `import_contact` erwartet Bytes, `export_contact` liefert
 - Eingehende Kanalnachrichten kommen als „Absender: Text“; `runtime.split_sender` trennt das.
 - Verlauf liegt in `messages` (kind `channel`, peer = Platznummer). Beim Löschen eines Kanals oder
   einem neuen Schlüssel auf demselben Platz wird der Verlauf gelöscht (Platz kann neu belegt werden).
+- `RealNode.channels()`: gelesene Plätze bleiben in `_chan_known` (auch bei Teil-Liste, `_chan_idx_by_name` wird trotzdem gesetzt); stumme Plätze (`_chan_failed`) erst nach
+  `CHANNELS_RETRY_S` (60 s) erneut, je Aufruf höchstens `CHANNELS_TOTAL_S` (45 s); solange einer fehlt → `NodeError` (nie Teil-Liste ausgeben: belegter Platz könnte als frei gelten).
+  `invalidate_channels()`/`connect()` vergessen alles. Tests: `tests/test_real_channels.py` (silent_slot, overall_time_limit).
 - Gegen meshcore 2.3.15 (Quelltext) geprüft, an echter Hardware NICHT getestet: `get_channel` für
   leere Plätze, `max_channels` aus device_query, Verhalten beim Senden auf nicht eingerichtete Plätze.
 
@@ -265,6 +276,8 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
   höchstens 150 Byte. Einstellungen nur über den Katalog `SETTINGS` mit Wertebereichen (Quelle: MeshCore-CLI-Doku docs.meshcore.io/cli_commands).
 - Passwörter: nur im Arbeitsspeicher; auf Wunsch in `data/repeater_secrets.json` (Rechte 600, NICHT in der Datenbank/Sicherung). Die API gibt nie ein Passwort zurück.
   Es gibt keine Benutzeranmeldung im Programm: Wer die Oberfläche erreicht, kann mit gemerktem Passwort verwalten.
+- `classify`: GESPERRT/RISKANT/GEHEIM/OHNE ANTWORT gelten ab dem WORTANFANG (`low.startswith(prefix)`, ohne Leerzeichen-Bedingung: `erase!`, `rebootnow`), Ausnahme `NOT_RISKY` (`set txdelay`);
+  unsichtbare Zeichen (Kategorien Cf/Zs/Cc …, `_INVISIBLE`) → abgelehnt. Tests: `tests/test_repeater.py` (suffixes, invisible).
 - Standardfunktionen am echten Repeater getestet und funktionsfähig; nicht jedes Detail geprüft, z. B.: ob Repeater-Antworten wie erwartet als `txt_type 1` ankommen, Antwortformat (`> wert`), Verhalten bei falschem Passwort
   (nur Zeitüberschreitung), ob Nachbarn-/ACL-Abfrage eine Anmeldung brauchen, Firmware-Unterschiede (manche `get`/`set` gibt es erst ab 1.14/1.15).
 - Tests: `tests/test_repeater.py` (Regeln, Passwort-Ablage, API, echter Node mit Fake-Bibliothek), UI-Smoke „Verwalten“.
@@ -288,6 +301,8 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 - `push.py`: Senden nur als Hintergrund-Task mit Zeitlimit; nie im Ereignispfad awaiten. Endpunkte nur `https` und mit Hostnamen (`validate_endpoint`, Schutz vor Zugriffen auf interne Ziele).
 - Service Worker (`static/sw.js`) bewusst ohne Zwischenspeicher der Seiten. Tippen auf eine Meldung bei schon offener App: der Service Worker schickt `{type: 'mc-open', url}` per `postMessage`, `app.js` setzt den Hash (bei gleichem Hash `route()`); `navigate()` wird nicht mehr benutzt (iOS-Home-Bildschirm-App unzuverlässig). Rückkehr aus dem Hintergrund (`visibilitychange`): WebSocket neu verbinden (wenn > 15 s weg oder nicht offen), Status neu laden und `_resume` an die Seite schicken; die Kanal-Seite lädt dann Liste und offenen Chat nach. Vom Entwickler auf dem iPhone bestätigt.
 - Getestet vom Entwickler mit iPhone, Mac und Windows-PC; Android und andere Browser nicht geprüft.
+- Hub: Kommt ein `send_json` an einen Browser nicht innerhalb `WS_SEND_TIMEOUT_S` an, wird der Client entfernt UND die Verbindung geschlossen (`Hub._close`, 1011), sonst bliebe der Tab „taub“.
+  `runtime.on_event`: `add_message` (direkt/Kanal) ist abgefangen – Auto-Antwort, Push, Raum laufen bei Datenbankfehlern weiter (`msg_id` None).
 - Ungelesen: Marker je Kanal in `settings` (`channel_read_<idx>`, Grundlinie `unread_baseline`; `POST /api/channels/{idx}/read` liefert die ALTE Markierung `read_upto`, der Marker springt nie zurück). `channels.js` setzt „Ungelesene Nachrichten“ vor die erste eingehende Nachricht mit `id > read_upto` (`unreadMark`, bleibt bis zum Schließen); der Zähler der Kanalliste ist nur Ersatz bei Fehlern (konnte veraltet sein → Sprung viel zu weit nach oben). Tests: `test_read_returns_previous_marker_for_the_unread_separator`, UI-Smoke „Server-Markierung“; „einmal“-Push ist zustandslos über die Nachrichten-ID: gemeldet wird, wenn die Nachricht die älteste ungelesene des Kanals ist (`channel_first_unread`). Beim Löschen/Neuschlüsseln eines Kanals Marker löschen.
 
 ## Eigener Node / Einstellungen („Mein Node“)
@@ -295,6 +310,8 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
   `node_settings/node_apply/node_set_time/node_reboot` in `base.py`, `sim.py`, `real.py`. Oberfläche ist aus `/api/node/spec` gebaut; der Server prüft alles selbst.
 - Riskant (HTTP 409 ohne `confirm`): Funkparameter (nur alle vier zusammen schreiben), Pfad-Kennung, Standort in Adverts „immer senden“, Neustart.
   Unveränderte Werte → 422 „Nichts zu ändern“. Breite/Länge nur zusammen (werden immer als Paar geschrieben, `node_apply` lehnt eine einzelne Koordinate ab). Sendeleistung ≤ `max_tx_power` des Nodes.
+- `mynode.js`: Auswahlwert ohne passende Option → eigene Option „unbekannt (Wert) – nicht ändern“ (Wert leer); leere Werte zählen beim Speichern nie als Änderung
+  (sonst schrieb der Browser still die erste Option, z. B. falsche Bandbreite). `run()` sperrt/entsperrt nur Knöpfe der eigenen Seite (`page`) und nur solange `alive`. UI-Smoke „unbekannte Bandbreite“.
 - Bewusst NICHT enthalten: Privatschlüssel export/import, Werkseinstellung. Keine Funk-Voreinstellungen eingebaut (nicht verifiziert).
 - Standardfunktionen am echten Node getestet und funktionsfähig; nicht jedes Detail geprüft, z. B.: alle Schreibbefehle, Reihenfolge, Wirkung von `set_other_params_from_infos`, `path_hash_mode` (Firmware ab 1.14),
   Bedeutung der Werte 0/1/2 bei Telemetrie/Standort-Weitergabe (aus Erinnerung, Zahlen werden deshalb immer mit angezeigt), `set_time`.
@@ -340,6 +357,8 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
   Sitzung ODER `control_token` wie der Wartungsmodus (`_control_auth` in `api.py`); der Watchdog fragt nur nach einem Einbruch. Tests: `tests/test_sendlog.py`.
 - Navigation: auf schmalen Bildschirmen eine wischbare Zeile (`style.css`, Media Query 900 px).
 - Kanal-Chat am Handy: Wisch nach rechts = zurück zur Kanalliste (`pages/channels.js`), nur in der einspaltigen Ansicht (`max-width: 640px`, wie in `style.css`), nicht wenn er im Menü (`#nav`, `.nav-backdrop`) beginnt; sonst hat Wischen nirgends eine Funktion. Ein offener Chat legt einen Verlaufseintrag an (`mcChat`), Browser-Zurück/iOS-Randwisch schließt den Chat; ein verwaister Eintrag wird beim Öffnen der Seite ersetzt. Doppeltippen erwähnt (eigene Erkennung, weil iOS `dblclick` nicht zuverlässig liefert). Entwurf und Erwähnung bleiben beim Kanalwechsel nicht hängen. Offener Chat am Handy: Es scrollt die ganze Seite (`#scrollArea`), nicht ein innerer Bereich; Kopf (`.chat-head`) und Eingabe (`.chat-compose`) sind `sticky`. `scroller()` in `channels.js` wählt den Bereich. Neue Nachrichten springen nur nach unten, wenn man schon unten war (`reloadMessages(0, 'follow')`).
+- Doppelklick-Schutz: `locked(btn, fn)` in `lib/util.js` (Regel speichern, Pause, Kontakt hinzufügen), Wartungsknöpfe mit `maintBusy`, Regel-Schalter während der Anfrage gesperrt.
+  Zähler unter Eingabefeldern: `countLabel` (Zeichen, bei Umlauten/Emojis zusätzlich Byte, Warnung über der Grenze); die genaue Byte-Grenze der Firmware ist NICHT an Hardware geprüft.
 - Seiten verwerfen veraltete Antworten über einen Ladezähler und `alive` (z. B. Akku, Sensoren, Karte, Kanal-/Kontakt-Chat); neue Ladefunktionen genauso bauen. Senden per Enter ist gegen Doppelsenden gesperrt, solange gesendet wird.
 
 ## Wartungsmodus (App)

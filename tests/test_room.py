@@ -109,7 +109,28 @@ async def test_delivery_respects_budget(rt, room):
     await say(rt, BOB, "/anmelden")                              # verbraucht das einzige Stundenkontingent
     await room.post_from_web("wartet")
     assert await room.deliver_once() == 0
-    assert any("Stundenlimit" in e["text"] for e in await rt.store.log(20))
+    assert any("Stundenlimit" in e["text"] or "Anteil des Raums" in e["text"] for e in await rt.store.log(20))
+
+
+# ---- eigenes Teilbudget: der Raum darf Akku-Überwachung und Pings nicht aushungern ---------------------------------
+async def test_room_uses_at_most_a_third_of_the_hourly_budget(rt, room):
+    rt.room.budget = SendBudget(0, 30)                            # Standard: 30/h → Raum höchstens 10 Plätze
+    assert room.room_cap() == 10
+    for i in range(20):
+        await rt.store.room_add_post("web", "Web", f"b{i}")
+    await say(rt, BOB, "/verlauf 5")                             # 5 bestätigte Sendungen à 3 Plätze → nur 3 passen (9 Plätze)
+    assert rt.room.budget.stats()["used_last_hour"] <= 10
+    assert any("Anteil des Raums" in e["text"] for e in await rt.store.log(20))
+    assert await rt.room.budget.acquire()                         # für die Automatik bleibt genug übrig
+
+
+async def test_unknown_commands_get_help_only_once_per_hour(rt, room):
+    sent0 = len(rt.node.sent)
+    await say(rt, BOB, "/quatsch")
+    assert len(rt.node.sent) == sent0 + 1                        # einmal Hilfe
+    room._last_cmd.clear()                                        # Befehlspause (20 s) überspringen
+    await say(rt, BOB, "/nochmal")
+    assert len(rt.node.sent) == sent0 + 1                        # in derselben Stunde: still
 
 
 async def test_posts_survive_pruning_and_max_posts(rt, room):

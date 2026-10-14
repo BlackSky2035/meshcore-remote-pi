@@ -38,6 +38,8 @@ CONFIRM_TX_MAX = 3           # send_message(confirm=True) sendet bis zu 3 Mal (R
 BACKOFF_MIN_S = 60.0         # nach einer unbestätigten Zustellung: Wartezeit für dieses Mitglied, verdoppelt sich bis BACKOFF_MAX_S, bei Erfolg zurück
 BACKOFF_MAX_S = 1800.0
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
+ROOM_SHARE = 3               # der Raum darf höchstens 1/ROOM_SHARE des Stunden-Sendebudgets nutzen (Rest bleibt Akku-Überwachung/Pings)
+UNKNOWN_HELP_S = 3600        # auf unbekannte Befehle höchstens einmal je Stunde und Mitglied mit der Hilfe antworten
 HELP = "Befehle: /p Text (schreiben), /neu, /verlauf [1-5], /anmelden, /abmelden"
 LINE_MAX = 150      # so lang darf eine Nachricht an die MeshCore-App höchstens sein (Zähler dort: 150), gemessen in BYTES (Umlaute/Emojis zählen mehr);
                     # die Empfangszeit wird nur angehängt, wenn es passt, und jede Zeile wird zur Sicherheit auf LINE_MAX gekürzt
@@ -80,6 +82,8 @@ class Room:
         self._hourly: dict[str, deque] = defaultdict(deque)
         self._tries: dict[tuple[str, int], int] = {}
         self._locks: dict[str, asyncio.Lock] = {}   # je Mitglied: /neu, /verlauf und automatische Zustellung nie gleichzeitig
+        self._room_sent: deque = deque()                # (Zeit, Plätze) der eigenen Sendungen in der letzten Stunde
+        self._last_help: dict[str, float] = {}          # je Mitglied: letzte Hilfe-Antwort auf einen unbekannten Befehl
 
     # ---- Einstellungen ---------------------------------------------------------
     async def config(self) -> dict:
@@ -105,9 +109,14 @@ class Room:
         Bestätigtes Senden kann bis zu CONFIRM_TX_MAX Funkpakete kosten und verbucht darum so viele Plätze im Sendebudget."""
         if self._paused():
             return "error"
-        if not await self.budget.acquire(CONFIRM_TX_MAX if confirm else 1):
+        n = CONFIRM_TX_MAX if confirm else 1
+        if not self._share_left(n):                       # eigenes Teilbudget: der Raum darf Akku-Überwachung/Pings nicht aushungern
+            await self._log("warn", f"Raum: Antwort an {name} übersprungen (Anteil des Raums am Sendebudget für diese Stunde erreicht)")
+            return "error"
+        if not await self.budget.acquire(n):
             await self._log("warn", f"Raum: Antwort an {name} übersprungen (Stundenlimit erreicht)")
             return "error"
+        self._room_sent.append((self._clock(), n))
         line = self._line(text)
         try:
             res = await self.node.send_message(key, line, confirm=True) if confirm else await self.node.send_message(key, line)
@@ -119,6 +128,15 @@ class Room:
         except NodeError as e:
             await self._log("error", f"Raum: Senden an {name} fehlgeschlagen: {e}")
             return "error"
+
+    def room_cap(self) -> int:
+        return max(CONFIRM_TX_MAX, int(self.budget.max_per_hour) // ROOM_SHARE)
+
+    def _share_left(self, n: int) -> bool:
+        now = self._clock()
+        while self._room_sent and now - self._room_sent[0][0] >= 3600:
+            self._room_sent.popleft()
+        return sum(k for _, k in self._room_sent) + n <= self.room_cap()
 
     def _note_unacked(self, key: str) -> None:
         """Unbestätigt: dieses Mitglied erst nach einer Wartezeit wieder automatisch beliefern (60 s, verdoppelt bis 30 min)."""
@@ -218,8 +236,11 @@ class Room:
         elif cmd == "abmelden":
             await self.store.room_update_member(key, subscribed=False)
             await self._say(key, name, f"{cfg['title']}: abgemeldet")
-        else:
+        elif now - self._last_help.get(key, float("-inf")) >= UNKNOWN_HELP_S:   # unbekannt: Hilfe nur selten (kostet Funkzeit)
+            self._last_help[key] = now
             await self._say(key, name, f"{cfg['title']}: {HELP}")
+        else:
+            log.info("Raum: unbekannter Befehl von %s ignoriert (Hilfe kam schon in dieser Stunde)", name)
 
     async def _post(self, key: str, name: str, text: str, cfg: dict) -> None:
         now = self._clock()

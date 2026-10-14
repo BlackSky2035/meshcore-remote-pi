@@ -1,5 +1,5 @@
 import {get, post, put, del} from '../lib/api.js';
-import {esc, fmtTime, typeLabel, batteryPct, batteryMv, lowMvFromPct} from '../lib/util.js';
+import {esc, fmtTime, typeLabel, batteryPct, batteryMv, lowMvFromPct, locked} from '../lib/util.js';
 
 const KINDS = {
   battery_poll: 'Akku-Überwachung',
@@ -73,12 +73,12 @@ export async function mount(root, ctx) {
     $('log').innerHTML = '';
     s.log.forEach(logLine);
   }
-  $('pauseBtn').onclick = async () => {
+  $('pauseBtn').onclick = locked($('pauseBtn'), async () => {
     try {
       await post('/api/automation/pause', {paused: !$('pauseBtn').dataset.paused});
       await loadState();
     } catch (e) { if (alive) $('error').textContent = e.message; }
-  };
+  });
 
   function logLine(e) {
     const el = $('log');
@@ -145,6 +145,8 @@ export async function mount(root, ctx) {
   $('rules').onchange = async e => {
     if (e.target.dataset.act !== 'toggle') return;
     const r = rules.find(x => x.id === Number(e.target.closest('tr').dataset.id));
+    if (!r) return;
+    e.target.disabled = true;                                   // bis die Antwort da ist: kein zweites Umschalten
     try { await put(`/api/rules/${r.id}`, {...r, enabled: e.target.checked}); await loadRules(); }
     catch (err) { if (alive) $('error').textContent = err.message; await loadRules(); }
   };
@@ -289,8 +291,8 @@ export async function mount(root, ctx) {
     return {kind, name: f.get('name'), enabled: editing.enabled, config};
   }
 
-  $('save').onclick = async e => {
-    e.preventDefault();
+  $('save').onclick = e => { e.preventDefault(); saveRule(); };
+  const saveRule = locked($('save'), async () => {
     if (!$('form').reportValidity()) return;
     try {
       const body = readForm();
@@ -300,7 +302,7 @@ export async function mount(root, ctx) {
       $('dlg').close();
       await loadRules();
     } catch (err) { if (alive) $('formError').textContent = err.message; }
-  };
+  });
   $('cancel').onclick = e => { e.preventDefault(); $('dlg').close(); };
 
   $('addRule').onclick = () => openForm($('newKind').value, null);

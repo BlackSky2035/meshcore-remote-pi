@@ -118,6 +118,8 @@ class Automation:
         self._clock = clock
         self._wall = wall                      # Wanduhr: letzter Lauf je Regel überlebt Neustarts (monotone Uhr nicht)
         self.paused = False
+        self.start_paused = False              # z. B. Datenbank nur im Arbeitsspeicher: gespeicherter Pausenzustand unbekannt
+        self.start_note: str | None = None     # Grund, warum pausiert gestartet wurde (Hinweis in der Oberfläche)
         self._next_run: dict[int, float] = {}
         self._reply_last: dict[tuple[int, str], float] = {}
         self._reply_times: dict[int, deque] = {}      # je Regel: Zeitpunkte der Antworten (rollierend 60 min)
@@ -130,7 +132,21 @@ class Automation:
 
     # ---- Lebenszyklus ----------------------------------------------------
     async def start(self) -> None:
-        self.paused = bool(await self.store.get_setting("automation_paused", False))
+        """Ist der gespeicherte Pausenzustand nicht lesbar (Datenbank kaputt, nur Arbeitsspeicher), startet die Automatik
+        PAUSIERT: sonst würde eine bewusst pausierte Automatik nach einem Datenbankschaden plötzlich wieder senden."""
+        if self.start_paused:
+            self.paused = True
+            self.start_note = "Automatik pausiert gestartet: gespeicherter Zustand nicht verfügbar (Datenbank). Bei Bedarf von Hand fortsetzen."
+        else:
+            try:
+                self.paused = bool(await self.store.get_setting("automation_paused", False))
+            except Exception as e:
+                log.exception("Pausenzustand nicht lesbar – Automatik startet pausiert")
+                self.paused = True
+                self.start_note = (f"Automatik pausiert gestartet: Pausenzustand nicht lesbar ({type(e).__name__}). "
+                                   "Bei Bedarf von Hand fortsetzen.")
+        if self.start_note:
+            log.warning(self.start_note)
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
@@ -393,9 +409,11 @@ class Automation:
                                f"Antworten pro Stunde erreicht, weitere Nachrichten werden ignoriert", rule["id"])
 
     # ---- Messungen (auch für manuelle Aktionen genutzt) ------------------
-    async def poll_node(self, public_key: str, low_mv: int | None = None, temperature: bool = False) -> dict:
+    async def poll_node(self, public_key: str, low_mv: int | None = None, temperature: bool = False,
+                        budget: "SendBudget | None" = None) -> dict:
         """Fragt den Status eines Repeaters/Rooms ab und speichert Akku und Erreichbarkeit,
-        auf Wunsch zusätzlich die Temperatur (zweite Funkanfrage per Telemetrie)."""
+        auf Wunsch zusätzlich die Temperatur (zweite Funkanfrage per Telemetrie). Mit `budget` (Automatik) wird der Platz
+        für die Temperatur erst gebucht, wenn wirklich gefunkt wird (nicht bei 24-h-Pause ohne Sensor oder gescheitertem Status)."""
         t0 = time.monotonic()
         try:
             status = await self.node.repeater_status(public_key)
@@ -411,15 +429,17 @@ class Automation:
             await self._check_battery(public_key, mv, low_mv)
         status = dict(status)
         if temperature:
-            status["temperature"] = await self._poll_temperature(public_key)
+            status["temperature"] = await self._poll_temperature(public_key, budget)
         await self.emit({"type": "node_update", "payload": {"public_key": public_key, "mv": mv}})
         return status
 
-    async def _poll_temperature(self, public_key: str) -> float | None:
+    async def _poll_temperature(self, public_key: str, budget: "SendBudget | None" = None) -> float | None:
         """Temperatur holen und speichern. Meldet ein Repeater keine, wird 24 h lang nicht mehr gefragt
         (spart Funkzeit); bei einem Timeout wird beim nächsten Durchlauf normal weiter versucht."""
         now = self._clock()
         if self._no_temp.get(public_key, 0) > now:
+            return None
+        if budget is not None and not await budget.acquire():     # erst jetzt buchen: es wird wirklich gefunkt
             return None
         try:
             tel = await self.node.repeater_telemetry(public_key)
@@ -478,9 +498,9 @@ class Automation:
                 if not await self.budget.acquire():
                     await self.log("warn", "Akku-Abfrage abgebrochen: Stundenlimit erreicht", rid)
                     return
-                want_temp = bool(cfg.get("temperature", False)) and await self.budget.acquire()
                 try:
-                    await self.poll_node(key, low_mv=cfg["low_mv"], temperature=want_temp)
+                    await self.poll_node(key, low_mv=cfg["low_mv"], temperature=bool(cfg.get("temperature", False)),
+                                         budget=self.budget)
                     await self.log("info", f"Akku-Abfrage {await self._contact_label(key)} gesendet", rid)
                 except NodeError as e:
                     await self.log("warn", f"Akku-Abfrage {key[:8]} fehlgeschlagen: {e}", rid)

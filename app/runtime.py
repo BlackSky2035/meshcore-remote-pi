@@ -68,6 +68,18 @@ class Hub:
                 dead.append(ws)
         for ws in dead:
             self.clients.discard(ws)
+            # Verbindung auch wirklich schließen: sonst bleibt der Browser verbunden, bekommt aber nie wieder Ereignisse
+            # und verbindet nicht neu (Oberfläche „taub“). Im Hintergrund und begrenzt, damit emit nicht hängt.
+            task = asyncio.create_task(self._close(ws))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    @staticmethod
+    async def _close(ws) -> None:
+        try:
+            await asyncio.wait_for(ws.close(code=1011), timeout=WS_SEND_TIMEOUT_S)
+        except Exception:
+            pass
 
     @staticmethod
     async def _run(listener: Listener, event: dict) -> None:
@@ -133,6 +145,7 @@ def build(settings: Settings,
     store = AsyncStorage(raw_store)
     budget = budget or SendBudget(settings.auto_min_gap_s, settings.auto_max_per_hour)
     automation = Automation(node, store, hub.emit, budget, retention_days=settings.retention_days)
+    automation.start_paused = raw_store.path == ":memory:" and settings.db_path != ":memory:"   # Rückfall auf RAM
     push = PushService(store, node)
 
     room = Room(node, store, budget, automation.log, hub.emit, paused=lambda: automation.paused)     # globaler Pausenschalter gilt auch für den Raum
@@ -157,8 +170,11 @@ def build(settings: Settings,
         if kind == "contact_message":
             prefix = payload.get("pubkey_prefix", "")
             contact = await automation.contact_by_prefix(prefix)
-            await store.add_message("in", "direct", prefix, payload.get("text", ""),
-                                    name=contact["name"] if contact else None)
+            try:                                   # Datenbank weg (Karte voll, gesperrt): Auto-Antwort, Push, Raum laufen trotzdem
+                await store.add_message("in", "direct", prefix, payload.get("text", ""),
+                                        name=contact["name"] if contact else None)
+            except Exception:
+                log.exception("Direktnachricht konnte nicht gespeichert werden")
             text0 = (payload.get("text") or "").strip()
             room_cmd = False
             try:
@@ -180,12 +196,16 @@ def build(settings: Settings,
         elif kind == "channel_message":
             sender, text = split_sender(payload.get("text", ""))
             plen, mode = payload.get("path_len"), payload.get("path_hash_mode")
-            msg_id = await store.add_message(
-                "in", "channel", str(payload.get("channel_idx", 0)), text, name=sender,
-                sender_ts=payload.get("sender_timestamp"), path=payload.get("path"),
-                path_hash_size=mode + 1 if isinstance(mode, int) and mode >= 0 else 1,
-                hops=plen if isinstance(plen, int) and 0 <= plen <= 63 else None,
-                snr=payload.get("SNR"), rssi=payload.get("RSSI"))
+            msg_id = None
+            try:                                   # Datenbank weg: Push, Stichwort und Auto-Antwort trotzdem
+                msg_id = await store.add_message(
+                    "in", "channel", str(payload.get("channel_idx", 0)), text, name=sender,
+                    sender_ts=payload.get("sender_timestamp"), path=payload.get("path"),
+                    path_hash_size=mode + 1 if isinstance(mode, int) and mode >= 0 else 1,
+                    hops=plen if isinstance(plen, int) and 0 <= plen <= 63 else None,
+                    snr=payload.get("SNR"), rssi=payload.get("RSSI"))
+            except Exception:
+                log.exception("Kanalnachricht konnte nicht gespeichert werden")
             try:
                 hit = await keyword_hit(text)
                 if hit:

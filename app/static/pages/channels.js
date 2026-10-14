@@ -1,5 +1,5 @@
 import {get, post, put, del} from '../lib/api.js';
-import {esc, ago, fmtTime, mentions, mentionTag} from '../lib/util.js';
+import {esc, ago, fmtTime, mentions, mentionTag, countLabel} from '../lib/util.js';
 import {pushState, enablePush, disablePush, savePrefs, testPush} from '../lib/push.js';
 
 function hue(name) {                       // gleicher Absender = gleiche Farbe
@@ -399,9 +399,9 @@ export async function mount(root, ctx) {
 
   const chatMax = Number($('chatText').maxLength);
   const updateChatCount = () => {
-    const n = $('chatText').value.trim().length;
-    $('chatCount').textContent = `${n} / ${chatMax}`;
-    $('chatCount').classList.toggle('err', n >= chatMax);
+    const c = countLabel($('chatText').value, chatMax);
+    $('chatCount').textContent = c.text;
+    $('chatCount').classList.toggle('err', c.warn);
   };
   $('chatText').oninput = updateChatCount;
   updateChatCount();

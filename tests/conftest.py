@@ -40,7 +40,7 @@ class FakeClock:
 @pytest_asyncio.fixture
 async def rt():
     """Laufzeit mit Simulator (ohne Hintergrundverkehr), RAM-Datenbank, ohne Sendeabstand."""
-    settings = Settings(mode="sim", db_path=":memory:")
+    settings = Settings(mode="sim", db_path=":memory:", manual_min_gap_s=0, manual_max_per_min=10_000)   # Tempolimit: tests/test_ratelimit.py
     runtime = build(
         settings,
         node_factory=lambda emit: SimNode(emit, background=False),

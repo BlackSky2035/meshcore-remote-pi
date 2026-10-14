@@ -9,7 +9,12 @@ function control(f, value) {
   const k = esc(f.key);
   if (f.kind === 'bool') return `<label class="toggle"><input type="checkbox" data-key="${k}" ${value ? 'checked' : ''}> an</label>`;
   if (f.kind === 'choice') {
-    return `<select data-key="${k}">${f.choices.map(c => {
+    // Passt der Wert vom Node zu keiner Auswahl (z. B. Bandbreite 41.667 statt 41.7, oder null), zeigt der Browser sonst
+    // stillschweigend die ERSTE Option – und „Speichern“ hätte diesen falschen Wert geschrieben (bei Funkparametern: kein Empfang mehr).
+    // Deshalb dann eine eigene Option „unbekannt“ mit leerem Wert; leer gilt beim Speichern nie als Änderung.
+    const known = f.choices.some(c => String(c) === String(value));
+    const unknown = known ? '' : `<option value="" selected>unbekannt${value === null || value === undefined || value === '' ? '' : ` (${esc(value)})`} – nicht ändern</option>`;
+    return `<select data-key="${k}">${unknown}${f.choices.map(c => {
       const lab = f.labels ? `${c} – ${f.labels[c] ?? ''}` : String(c);
       return `<option value="${esc(c)}" ${String(c) === String(value) ? 'selected' : ''}>${esc(lab)}</option>`;
     }).join('')}</select>`;
@@ -95,6 +100,7 @@ export async function mount(root, ctx) {
       for (const f of fields) {
         const v = val(f);
         const cur = s[f.key];
+        if (v === '' && f.kind !== 'text') continue;          // leer (unbekannt/nicht ausgefüllt) ist nie eine Änderung
         const same = f.kind === 'bool' ? !!cur === v : (f.kind === 'text' ? String(cur ?? '') === v : String(cur) === String(v) || (v !== '' && Number(v.replace(',', '.')) === Number(cur)));
         if (!same) changes[f.key] = v;
       }
@@ -148,12 +154,15 @@ export async function mount(root, ctx) {
   }
 
   let busy = false;
+  // Nur die Knöpfe DIESER Seite sperren/freigeben: `root` ist der gemeinsame Seitenbereich. Wechselt man während einer
+  // laufenden Aktion die Seite, hätte das Freigeben sonst die (gesperrten) Knöpfe der neuen Seite wieder aktiviert.
+  const page = root.querySelector('section.card');
   async function run(fn, working) {
     if (busy || !alive) return;
     busy = true; msg(working);
-    root.querySelectorAll('button').forEach(b => b.disabled = true);
-    try { await fn(); } catch (e) { msg(e.message, 'err'); }
-    finally { busy = false; root.querySelectorAll('button').forEach(b => b.disabled = false); }
+    page.querySelectorAll('button').forEach(b => b.disabled = true);
+    try { await fn(); } catch (e) { if (alive) msg(e.message, 'err'); }
+    finally { busy = false; if (alive) page.querySelectorAll('button').forEach(b => b.disabled = false); }
   }
 
   draw();

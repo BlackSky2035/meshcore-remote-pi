@@ -6,7 +6,7 @@ auf dem Pi.
 
 ```bash
 # 1) Server mit frischer Test-Datenbank im Simulator starten (eigenes Terminal)
-MC_MODE=sim MC_PORT=8767 MC_DB_PATH=/tmp/ui-test.db python -m app.main
+MC_MODE=sim MC_PORT=8767 MC_DB_PATH=/tmp/ui-test.db MC_MANUAL_MIN_GAP_S=0 MC_MANUAL_MAX_PER_MIN=10000 python -m app.main   # Tempolimit aus: der Test klickt schneller als 2 s
 
 # 2) Test ausführen (Datenbank vor jedem Lauf löschen, sonst stimmen die Zählungen nicht)
 cd tests/ui_smoke && npm install && npm test

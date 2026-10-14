@@ -120,9 +120,12 @@ export async function mount(root, ctx) {
       $('maintEnd').hidden = !m.active;
     } catch (e) { if (alive) $('maintState').textContent = e.message; }
   }
+  let maintBusy = false;                                       // Doppelklick: nicht zweimal schalten
   $('maintBtns').onclick = async e => {
-    const b = e.target.closest('button'); if (!b) return;
+    const b = e.target.closest('button'); if (!b || maintBusy) return;
+    maintBusy = true;
     try { if (b.id === 'maintEnd') await del('/api/maintenance'); else await post('/api/maintenance', {minutes: Number(b.dataset.m)}); } catch (err) { if (alive) $('error').textContent = err.message; }
+    finally { maintBusy = false; }
     if (!alive) return;
     renderMaint(); ctx.refreshStatus();
   };
