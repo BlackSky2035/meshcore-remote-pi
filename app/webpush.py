@@ -95,8 +95,19 @@ class PushError(Exception):
     """Vorübergehender oder sonstiger Fehler beim Senden."""
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Weiterleitungen NICHT folgen (Antwort 3xx wird zum Fehler): sonst könnte ein Ziel die Anfrage auf eine interne Adresse
+    umlenken, an `validate_endpoint` vorbei, und bei der Stationsabfrage ginge das Token an die neue Adresse mit."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+no_redirect_open = urllib.request.build_opener(NoRedirect).open
+
+
 def send(sub: dict, payload: dict, vapid: dict, subject: str, ttl: int = 3600, timeout: float = 10.0,
-         urlopen=urllib.request.urlopen) -> None:
+         urlopen=no_redirect_open) -> None:
     """Sendet eine Benachrichtigung. Wirft PushGone (Abo löschen) oder PushError; sonst kehrt sie normal zurück."""
     endpoint = sub["endpoint"]
     validate_endpoint(endpoint)

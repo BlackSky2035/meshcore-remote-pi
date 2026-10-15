@@ -35,10 +35,38 @@ function dispatch(ev) {
   });
 }
 
+// Home-Bildschirm-App (iOS): Vor der ersten Seite der App liegt oft eine leere Seite (about:blank, z. B. nach dem Öffnen über eine
+// Mitteilung). Ein „Zurück“ dorthin zeigt eine weiße Seite, aus der man nicht zurückkommt. Deshalb wird der erste eigene Verlaufseintrag
+// als Boden markiert und ein zweiter darübergelegt; kommt ein „Zurück“ am Boden an, legt die App sofort wieder einen Eintrag darauf.
+// Nur in der installierten App: im normalen Browser-Tab soll „Zurück“ weiter zur vorigen Seite führen.
+const STANDALONE = (() => {
+  try { return navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches; } catch { return false; }
+})();
+if (STANDALONE) {
+  try {
+    if (window.history.state?.mcRoot) window.history.pushState({mcApp: 1}, '');
+    else if (!window.history.state) { window.history.replaceState({mcRoot: 1}, ''); window.history.pushState({mcApp: 1}, ''); }
+  } catch { /* ohne Verlauf */ }
+  window.addEventListener('popstate', e => {
+    if (e.state?.mcRoot) { try { window.history.pushState({mcApp: 1}, ''); } catch { /* ohne Verlauf */ } }
+  });
+}
+
 let ws = null;
+let wsRetryMs = 2000;          // Abstand zum nächsten Verbindungsversuch: wächst bis 30 s, solange der Server nicht erreichbar ist
+let wsWasOpen = false;         // schon einmal verbunden: nach einer Neuverbindung Verpasstes nachladen
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const sock = ws = new WebSocket(`${proto}://${location.host}/ws`);
+  sock.onopen = () => {
+    wsRetryMs = 2000;
+    if (wsWasOpen) {           // Ereignisse während der Unterbrechung fehlen: Status, Glocke und aktive Seite neu laden
+      refreshStatus();
+      refreshUnread();
+      dispatch({type: '_resume', away_ms: 0});
+    }
+    wsWasOpen = true;
+  };
   ws.onmessage = m => {
     let d;
     try { d = JSON.parse(m.data); } catch { return; }      // kaputte Nachricht ignorieren
@@ -56,7 +84,12 @@ function connectWS() {
       dispatch(d.event);
     }
   };
-  sock.onclose = () => { if (ws === sock) setTimeout(() => { if (ws === sock) connectWS(); }, 2000); };
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    const wait = wsRetryMs;
+    wsRetryMs = Math.min(30000, wsRetryMs * 2);
+    setTimeout(() => { if (ws === sock) connectWS(); }, wait);
+  };
 }
 
 // Zurück aus dem Hintergrund (andere App, gesperrter Bildschirm): iOS hält die Seite dort an, die WebSocket-Verbindung
@@ -71,6 +104,8 @@ document.addEventListener('visibilitychange', () => {
     const old = ws;
     ws = null;
     try { old && old.close(); } catch { /* egal */ }
+    wsWasOpen = false;         // das Nachladen kommt gleich unten (_resume), nicht doppelt aus onopen
+    wsRetryMs = 2000;
     connectWS();
   }
   refreshStatus();
@@ -178,8 +213,11 @@ async function route() {
   try {
     const mod = await PAGES[name]();
     if (my !== token) return;          // inzwischen woanders hingeklickt
-    root.innerHTML = '';
-    const mounted = await mod.mount(root, {on, state, history, refreshStatus, refreshUnread, banner});
+    // eigener Container je Seite: schreibt eine verlassene Seite noch (späte Antwort), landet das im abgehängten Container, nie in der neuen Seite
+    const box = document.createElement('div');
+    box.style.display = 'contents';    // Karten bleiben direkte Raster-Elemente von <main> (Abstände wie bisher)
+    root.replaceChildren(box);
+    const mounted = await mod.mount(box, {on, state, history, refreshStatus, refreshUnread, banner});
     if (my !== token) {                // während mount() erneut navigiert: sofort wieder abbauen, nichts anzeigen
       try { mounted?.(); } catch (e) { console.error(e); }
       return;

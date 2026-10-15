@@ -160,6 +160,13 @@ class AutoReplyConfig(BaseModel):
             raise ValueError("Kanalplatz muss zwischen 0 und 39 liegen")
         return sorted(set(v))
 
+    @field_validator("match")
+    @classmethod
+    def _match_not_blank(cls, v):
+        if not v.strip():                      # nur Leerzeichen: „enthält“ würde fast jede Nachricht treffen
+            raise ValueError("Auslöser darf nicht nur aus Leerzeichen bestehen")
+        return v
+
     @model_validator(mode="after")
     def _somewhere(self):
         if not self.direct and not self.channels:

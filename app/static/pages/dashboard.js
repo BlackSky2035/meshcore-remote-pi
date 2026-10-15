@@ -11,6 +11,7 @@ export async function mount(root, ctx) {
         <button id="advert">Advert senden</button>
         <button id="advertFlood" class="secondary">Advert (Flood)</button>
       </div>
+      <p id="advertResult" class="small muted" role="status" aria-live="polite"></p>
     </section>
     <section class="card" id="usbCard" hidden>
       <h2>USB-Node</h2>
@@ -101,16 +102,27 @@ export async function mount(root, ctx) {
     el.scrollTop = el.scrollHeight;
   }
 
-  function action(btn, fn) {
+  // Rückmeldung unter den Knöpfen: „sende …“, dann Erfolg mit Uhrzeit (vorher kam bei Erfolg gar nichts, nur Fehler wurden gezeigt)
+  function action(btn, fn, okText) {
     btn.addEventListener('click', async () => {
+      const out = $('advertResult');
       btn.disabled = true;
-      try { await fn(); if (alive) $('error').textContent = ''; }
-      catch (e) { if (alive) $('error').textContent = e.message; }
-      finally { if (alive) btn.disabled = false; }
+      out.className = 'small muted'; out.textContent = 'sende …';
+      try {
+        await fn();
+        if (!alive) return;
+        $('error').textContent = '';
+        out.className = 'small ok';
+        out.textContent = `${okText} (${new Date().toLocaleTimeString('de-DE', {hour: '2-digit', minute: '2-digit', second: '2-digit'})})`;
+      } catch (e) {
+        if (!alive) return;
+        out.textContent = '';
+        $('error').textContent = e.message;
+      } finally { if (alive) btn.disabled = false; }
     });
   }
-  action($('advert'), () => post('/api/advert', {flood: false}));
-  action($('advertFlood'), () => post('/api/advert', {flood: true}));
+  action($('advert'), () => post('/api/advert', {flood: false}), 'Advert gesendet (direkte Nachbarn)');
+  action($('advertFlood'), () => post('/api/advert', {flood: true}), 'Advert gesendet (Flood, netzweit)');
 
   async function renderMaint() {
     try {

@@ -264,3 +264,25 @@ async def test_reading_channels_has_an_overall_time_limit(monkeypatch):
         await n.channels()
     assert now[0] == 60                                                # Platz 0 (3 Versuche à 20 s), danach Frist um: keine weiteren angefangen
     assert "0, 1, 2, 3" in str(e.value)
+
+
+@pytest.mark.parametrize("mode,path,flags", [(0, "c3", 0), (1, "c3c3", 1), (2, "c3c3c3c3", 2)])
+async def test_trace_ping_uses_the_nodes_path_hash_size(mode, path, flags):
+    n = make({})
+    n._EventType = SimpleNamespace(ERROR=ERROR, TRACE_DATA="trace")
+    calls = {}
+
+    async def device_query():
+        return SimpleNamespace(type=OK, payload={"path_hash_mode": mode, "max_channels": 4})
+
+    async def send_trace(auth_code=0, tag=None, flags=None, path=None):
+        calls.update(path=path, flags=flags)
+        return SimpleNamespace(type=OK, payload={"suggested_timeout": 0})
+
+    async def wait_for_event(*a, **k):
+        return None
+    n.mc.commands.send_device_query = device_query
+    n.mc.commands.send_trace = send_trace
+    n.mc.wait_for_event = wait_for_event
+    await n.ping("c3" * 32, "trace")
+    assert (calls["path"], calls["flags"]) == (path, flags)

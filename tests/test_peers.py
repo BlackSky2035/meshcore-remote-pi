@@ -75,13 +75,13 @@ async def test_fetch_limits(monkeypatch):
         def read(self, n): return self.data[:n]
         def __enter__(self): return self
         def __exit__(self, *a): return False
-    monkeypatch.setattr(P.urllib.request, "urlopen", lambda req, timeout: R(b"x" * (P.MAX_BYTES + 5)))
+    monkeypatch.setattr(P, "no_redirect_open", lambda req, timeout: R(b"x" * (P.MAX_BYTES + 5)))
     with pytest.raises(ValueError):
         P.fetch_summary(P.Peer("A", "https://a", "t"))
-    monkeypatch.setattr(P.urllib.request, "urlopen", lambda req, timeout: R(b"[1]"))
+    monkeypatch.setattr(P, "no_redirect_open", lambda req, timeout: R(b"[1]"))
     with pytest.raises(ValueError):
         P.fetch_summary(P.Peer("A", "https://a", "t"))
-    monkeypatch.setattr(P.urllib.request, "urlopen", lambda req, timeout: R(b'{"a": 1}'))
+    monkeypatch.setattr(P, "no_redirect_open", lambda req, timeout: R(b'{"a": 1}'))
     assert P.fetch_summary(P.Peer("A", "https://a", "t")) == {"a": 1}
 
 

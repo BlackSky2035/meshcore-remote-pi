@@ -7,9 +7,12 @@ Kanten: `path` (vom Node selbst gemeldeter Funkweg zu einem Kontakt, Reihenfolge
 `heard` (Repeater-Kette, über die tatsächlich eine Kanalnachricht ankam - ergänzt `path`, wenn der Node
 selbst noch keinen Pfad zu einem Absender kennt; Direktnachrichten speichern diesen Weg bisher nicht).
 Zwischenstationen im Pfad sind nur die ersten Bytes des Public Keys: passt genau ein Repeater/Room, wird er benannt, sonst bleibt es
-eine Kennung (mehrdeutig → „?“). Keine Ortsdaten nötig. An echter Hardware nicht getestet (Pfad-Kennung > 1 Byte wird nicht unterstützt).
+eine Kennung (mehrdeutig → „?“). Keine Ortsdaten nötig. Kennungen sind 1, 2 oder 3 Byte lang, je nach Pfad-Kennung, mit der der Weg
+gelernt wurde (`path_hash_size` je Kontakt bzw. Nachricht). An echter Hardware nicht getestet.
 """
 from __future__ import annotations
+
+from .node.base import split_path
 
 
 def _resolve(prefix: str, contacts: list[dict]) -> list[dict]:
@@ -18,9 +21,8 @@ def _resolve(prefix: str, contacts: list[dict]) -> list[dict]:
 
 
 def _split_path(path: str, hash_size: int | None) -> list[str]:
-    """Hex-Pfad in Hop-Kennungen zerlegen (gleiche Annahme wie beim Anzeigen im Kanal-Chat)."""
-    step = max(1, hash_size or 1) * 2
-    return [path[i:i + step] for i in range(0, len(path) - len(path) % step, step)]
+    """Hex-Pfad in Hop-Kennungen zerlegen (gleiche Regel wie beim Anzeigen im Kanal-Chat)."""
+    return split_path(path, hash_size or 1)
 
 
 def build_graph(contacts: list[dict], reports: list[dict], heard: list[dict] | None = None) -> dict:

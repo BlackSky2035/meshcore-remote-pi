@@ -689,3 +689,48 @@ async def test_failing_channel_lookup_still_logs_the_send(rt, monkeypatch):
     await auto.tick(); clock.advance(30); await auto.tick()
     assert len(_pings(rt)) == 1
     assert any(e["text"].startswith("Kanal-Ping in Kanal 0 gesendet") for e in await rt.store.log(20))
+
+
+# ---------------------------------------------------------------- Pause greift sofort, leerer Auslöser
+async def test_pause_during_budget_wait_stops_the_send():
+    """Wartet eine Sendung auf den Mindestabstand und wird inzwischen pausiert, geht sie nicht mehr raus (und bucht keinen Platz)."""
+    clock = FakeClock()
+    paused = {"on": False}
+
+    async def fake_sleep(s):
+        paused["on"] = True                    # während des Wartens drückt jemand „Pause“
+        clock.advance(s)
+
+    b = SendBudget(min_gap_s=15, max_per_hour=100, clock=clock, sleep=fake_sleep)
+    b.halted = lambda: paused["on"]
+    assert await b.acquire() is True
+    assert await b.acquire() is False and b.why == "Automatik pausiert"
+    assert b.stats()["used_last_hour"] == 1
+
+
+async def test_paused_automation_blocks_budget_for_rules(rt):
+    await rt.automation.set_paused(True)
+    assert await rt.automation.budget.acquire() is False
+    assert rt.automation.budget.why == "Automatik pausiert"
+    await rt.automation.set_paused(False)
+    assert await rt.automation.budget.acquire() is True
+
+
+async def test_rule_run_after_pause_logs_pause_not_hour_limit(rt):
+    await rt.store.add_rule("advert", "A", {"interval_min": 60, "flood": False})
+    rule = (await rt.store.rules())[-1]
+    await rt.automation.set_paused(True)
+    adverts = []
+    rt.node.send_advert = lambda flood=False: adverts.append(flood)
+    await rt.automation.run_rule(rule)
+    assert adverts == []
+    assert any("Advert abgebrochen: Automatik pausiert" in e["text"] for e in await rt.store.log())
+
+
+@pytest.mark.parametrize("match", [" ", "   ", "\t"])
+def test_blank_trigger_is_rejected(match):
+    from pydantic import ValidationError
+
+    from app.schemas import validate_config
+    with pytest.raises(ValidationError, match="Leerzeichen"):
+        validate_config("auto_reply", {"match": match, "mode": "contains", "reply": "pong"})

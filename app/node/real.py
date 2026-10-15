@@ -19,7 +19,7 @@ from typing import Any
 
 from ..config import Settings
 from .base import (BaseNode, Emit, NodeError, check_channel, jsonable, normalize_channel,
-                   normalize_contact)
+                   normalize_contact, trace_hash_bytes)
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +77,7 @@ class RealNode(BaseNode):
         self.mc: Any = None
         self._EventType: Any = None
         self._max_channels: int | None = None
+        self._path_hash_mode: int | None = None  # Pfad-Kennung des eigenen Nodes (0/1/2 = 1/2/3 Byte je Hop), aus device_query
         self._chan_idx_by_name: dict[str, int] = {}
         self._channels_cache: list[dict] | None = None
         self._chan_known: dict[int, dict | None] = {}   # schon gelesene Plätze (None = leer), auch bei unvollständiger Liste
@@ -142,6 +143,7 @@ class RealNode(BaseNode):
         self._chan_known, self._chan_failed, self._chan_retry_at = {}, [], 0.0
         self._chan_idx_by_name = {}
         self._max_channels = None           # Werte des Geräts: am selben Anschluss kann jetzt ein anderer Node hängen
+        self._path_hash_mode = None
         self._battery = None
         self.public_key = None
         s = self.s
@@ -264,6 +266,7 @@ class RealNode(BaseNode):
             dev = self._check(await self.mc.commands.send_device_query(), "device_query")
             info["model"] = dev.get("model")
             info["firmware"] = dev.get("ver") or dev.get("fw ver")
+            self._remember_path_hash_mode(dev)
             info["device_info"] = jsonable(dev)
         except Exception as e:
             info["device_info_error"] = str(e)
@@ -297,6 +300,7 @@ class RealNode(BaseNode):
                 "last_advert": c.get("last_advert"),
                 "path_len": c.get("out_path_len"),
                 "out_path": c.get("out_path"),
+                "path_hash_mode": c.get("out_path_hash_mode"),     # 0/1/2 = 1/2/3 Byte je Zwischenstation (so wie der Pfad gelernt wurde)
             }))
         out.sort(key=lambda c: c["name"].lower())
         return out
@@ -542,6 +546,7 @@ class RealNode(BaseNode):
         try:
             dev = self._check(await self.mc.commands.send_device_query(), "device_query")
             out["path_hash_mode"] = dev.get("path_hash_mode")
+            self._remember_path_hash_mode(dev)
             out["firmware"] = dev.get("ver") or dev.get("fw ver")
         except Exception as e:
             log.debug("device_query: %s", e)
@@ -581,6 +586,7 @@ class RealNode(BaseNode):
             if "path_hash_mode" in c:
                 self._check(await cmds.set_path_hash_mode(int(c["path_hash_mode"])), "set_path_hash_mode")
                 done.append("path_hash_mode")
+                self._path_hash_mode = int(c["path_hash_mode"])
         except NodeError as e:
             raise NodeError(f"{e}" + (f" (schon geändert: {', '.join(done)})" if done else "")) from e
         return done
@@ -670,17 +676,32 @@ class RealNode(BaseNode):
             raise NodeError("Keine Antwort auf die Zugriffslisten-Abfrage (angemeldet als Admin?)")
         return [{"prefix": e["key"], "perm": e["perm"]} for e in res]
 
-    async def _trace_ping(self, public_key: str, t0: float) -> dict:
-        """Zero-Hop-Ping: Trace über genau einen Hop (den Repeater, 1-Byte-Hash des Public Keys).
+    def _remember_path_hash_mode(self, dev: dict) -> None:
+        m = dev.get("path_hash_mode")
+        if isinstance(m, int) and 0 <= m <= 2:
+            self._path_hash_mode = m
 
-        Antwort nur, wenn der Repeater direkt erreichbar ist. Mehrere Repeater mit gleichem ersten
-        Byte im Schlüssel können nicht unterschieden werden. Gegen den Quelltext von meshcore 2.3.15
-        geprüft (send_trace / TRACE_DATA), noch nicht an echter Hardware.
+    async def _own_path_hash_mode(self) -> int:
+        """Pfad-Kennung des eigenen Nodes (ohne eigene Sperre: Aufrufer hält `_cmd_lock`). Unbekannt → 0 (1 Byte)."""
+        if self._path_hash_mode is None:
+            try:
+                self._remember_path_hash_mode(self._check(await self.mc.commands.send_device_query(), "device_query"))
+            except Exception as e:
+                log.debug("device_query für Pfad-Kennung: %s", e)
+        return self._path_hash_mode or 0
+
+    async def _trace_ping(self, public_key: str, t0: float) -> dict:
+        """Zero-Hop-Ping: Trace über genau einen Hop (den Repeater, Kennung = erste Bytes des Public Keys).
+
+        Die Kennung ist so lang wie die Pfad-Kennung des eigenen Nodes (`trace_hash_bytes`: 1 oder 2 Byte, bei 3 Byte 4, weil
+        Trace nur 1/2/4 Byte kennt). Antwort nur, wenn der Repeater direkt erreichbar ist. Repeater mit gleicher Kennung können
+        nicht unterschieden werden. Gegen den Quelltext der Bibliothek geprüft (send_trace / TRACE_DATA), noch nicht an echter Hardware.
         """
         tag = random.randint(1, 0xFFFFFFFF)
+        size, flags = trace_hash_bytes(await self._own_path_hash_mode())
         try:
             sent = self._check(
-                await self.mc.commands.send_trace(auth_code=0, tag=tag, path=public_key[:2]), "send_trace")
+                await self.mc.commands.send_trace(auth_code=0, tag=tag, flags=flags, path=public_key[:size * 2]), "send_trace")
         except NodeError as e:
             log.info("Trace-Ping nicht gesendet: %s", e)
             return {"ok": False, "rtt_ms": None}          # wie im Simulator

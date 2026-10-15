@@ -88,9 +88,14 @@ export async function mount(root, ctx) {
     }).join('') : '<tr><td colspan="6" class="muted">Keine Knoten bekannt. Sobald Repeater einen Advert senden, erscheinen sie hier.</td></tr>';
   }
 
+  let loadSeq = 0;
   async function load() {
-    try { nodes = await get('/api/nodes'); if (!alive) return; $('error').textContent = ''; }
-    catch (e) { nodes = []; if (!alive) return; $('error').textContent = e.message; }
+    const my = ++loadSeq;                     // nur die neueste Antwort zählt (ältere, langsamere Abfrage nie darüberschreiben)
+    let list, err = '';
+    try { list = await get('/api/nodes'); } catch (e) { list = []; err = e.message; }
+    if (!alive || my !== loadSeq) return;
+    nodes = list;
+    $('error').textContent = err;
     render();
   }
 
@@ -99,8 +104,10 @@ export async function mount(root, ctx) {
     const n = nodes.find(x => x.public_key === key);
     $('histCard').hidden = false;
     $('histTitle').textContent = `Verlauf: ${n ? n.name : key.slice(0, 8)}`;
-    const h = await get(`/api/nodes/${key}/history?hours=168`);
-    if (!alive) return;
+    let h;
+    try { h = await get(`/api/nodes/${key}/history?hours=168`); }
+    catch (e) { if (alive && histKey === key) $('histPing').textContent = e.message; return; }
+    if (!alive || histKey !== key) return;     // inzwischen anderen Knoten gewählt oder geschlossen: veraltete Antwort verwerfen
     $('histBat').innerHTML = sparkline(h.battery.map(b => ({x: b.ts, y: b.mv})), {yMin: 3000, yMax: 4200});
     const ok = h.pings.filter(p => p.ok).length;
     const last = h.pings.slice(-10).reverse().map(p =>

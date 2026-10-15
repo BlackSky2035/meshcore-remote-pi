@@ -17,10 +17,12 @@ def _sim_contacts() -> dict[str, dict]:
         ("d4" * 32, "Repeater Dach (Sim)", 2, 52.5100, 13.3600),
         ("e5" * 32, "Raum Stammtisch (Sim)", 3, 0.0, 0.0),
     ]
-    paths = {"a1" * 32: ("c3", 1), "b2" * 32: ("d4c3", 2), "c3" * 32: ("", 0), "d4" * 32: ("c3", 1), "e5" * 32: ("", -1)}
+    # (Pfad, Zwischenstationen, Pfad-Kennung): Bob mit 2-Byte-Kennung (Modus 1), damit auch dieser Fall im Simulator vorkommt
+    paths = {"a1" * 32: ("c3", 1, 0), "b2" * 32: ("d4d4c3c3", 2, 1), "c3" * 32: ("", 0, 0), "d4" * 32: ("c3", 1, 0), "e5" * 32: ("", -1, 0)}
     return {
         key: {"public_key": key, "name": name, "type": t, "lat": lat, "lon": lon,
-              "last_advert": int(time.time()) - random.randint(60, 3600), "path_len": paths[key][1], "out_path": paths[key][0]}
+              "last_advert": int(time.time()) - random.randint(60, 3600), "path_len": paths[key][1], "out_path": paths[key][0],
+              "path_hash_mode": paths[key][2]}
         for key, name, t, lat, lon in raw
     }
 

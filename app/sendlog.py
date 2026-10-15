@@ -28,6 +28,7 @@ TX_KINDS = {
     "repeater_status": "Statusabfrage",
     "repeater_telemetry": "Telemetrie",
     "repeater_login": "Repeater-Anmeldung",
+    "repeater_logout": "Repeater-Abmeldung",
     "repeater_command": "Repeater-Befehl",
     "repeater_neighbours": "Nachbarliste",
     "repeater_acl": "Zugriffsliste",

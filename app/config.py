@@ -12,10 +12,14 @@ Beispiel config.toml (siehe config.example.toml):
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger("meshcore-remote")
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -54,6 +58,19 @@ class Settings:
     manual_min_gap_s: float = 2.0     # Funkaktionen von Hand (Nachricht, Advert, Ping, Abfragen): Mindestabstand …
     manual_max_per_min: int = 20      # … und höchstens so viele Funkpakete je Minute (0 s/viel nur für Tests)
     battery_poll_gap_s: float = 20.0  # Pause zwischen zwei Repeatern bei „Jetzt abfragen“ auf der Akku-Seite (schont die Stromversorgung des Pi)
+    # Hinweise beim Laden (Wert korrigiert, Datei fehlerhaft): erscheinen in der Übersicht unter „problems“; keine Einstellung
+    config_notes: list = field(default_factory=list)
+
+
+# Sicherheitsnetz gegen Tippfehler in config.toml/MC_*: Werte außerhalb werden auf die Grenze gesetzt (mit Hinweis).
+# Die Standardwerte oben bleiben unverändert. Die Funk-Grenzen gelten nicht im Simulator (kein Funk; Tests brauchen 0 s).
+LIMITS = {                            # Feld: (kleinster, größter Wert, gilt auch im Simulator)
+    "auto_min_gap_s": (5.0, None, False),
+    "auto_max_per_hour": (1, 60, False),
+    "manual_min_gap_s": (1.0, None, False),
+    "manual_max_per_min": (1, 30, False),
+    "retention_days": (7, None, True),
+}
 
 
 _SECTIONS = {
@@ -79,23 +96,67 @@ def _cast(value, like):
     return str(value)
 
 
+_PASSWORD_LINE = re.compile(r"^\s*access_password\s*=\s*['\"]?[^'\"\s#]", re.M)
+
+
+def _set(s: Settings, key: str, value, where: str) -> None:
+    """Wert übernehmen; passt der Typ nicht (z. B. Text statt Zahl), bleibt der Standardwert und es gibt einen Hinweis."""
+    try:
+        setattr(s, key, _cast(value, getattr(s, key)))
+    except (TypeError, ValueError):
+        s.config_notes.append(f"{where}: {key} = {value!r} ist ungültig, verwendet wird {getattr(s, key)!r}.")
+
+
+def apply_limits(s: Settings) -> None:
+    """Werte außerhalb von LIMITS auf die Grenze setzen und einen Hinweis hinterlegen."""
+    for key, (lo, hi, in_sim) in LIMITS.items():
+        if s.mode == "sim" and not in_sim:
+            continue
+        v = getattr(s, key)
+        fixed = max(lo, v) if lo is not None else v
+        fixed = min(hi, fixed) if hi is not None else fixed
+        if fixed != v:
+            setattr(s, key, type(v)(fixed))
+            s.config_notes.append(f"Einstellung {key} = {v} ist {'zu klein' if v < fixed else 'zu groß'}, "
+                                  f"verwendet wird {type(v)(fixed)} (Schutz vor Tippfehlern).")
+
+
 def load_settings() -> Settings:
     s = Settings()
     cfg_path = Path(os.environ.get("MC_CONFIG", ROOT / "config.toml"))
     if cfg_path.is_file():
-        with cfg_path.open("rb") as f:
-            data = tomllib.load(f)
+        raw = cfg_path.read_bytes()
+        try:
+            data = tomllib.loads(raw.decode("utf-8"))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+            # Kaputte Datei: lieber mit Standardwerten starten (Oberfläche erreichbar, Warnung) als gar nicht. Ausnahme: steht dort
+            # ein Passwort (und keins über MC_ACCESS_PASSWORD), liefe die App plötzlich ohne Anmeldung → dann bewusst NICHT starten.
+            text = raw.decode("utf-8", errors="replace")
+            if _PASSWORD_LINE.search(text) and not os.environ.get("MC_ACCESS_PASSWORD"):
+                raise SystemExit(f"{cfg_path} ist fehlerhaft ({e}). Weil dort ein Zugangspasswort steht, startet das Programm "
+                                 f"nicht ohne Anmeldung. Bitte die Datei korrigieren.")
+            data = {}
+            s.mode = "serial"                  # eine config.toml gibt es nur im Betrieb: echter Node statt Simulator (Standard „sim“ ist für die Entwicklung)
+            s.config_notes.append(f"{cfg_path.name} ist fehlerhaft und wurde nicht gelesen ({e}). Es gelten die Standardwerte "
+                                  f"(Node per USB automatisch, Port 8000 nur auf diesem Rechner, Grenzen …) – bitte die Datei korrigieren und neu starten.")
         for section, keys in _SECTIONS.items():
             block = data.get(section, {})
+            if not isinstance(block, dict):
+                continue
             for key in keys:
                 if key in block:
-                    setattr(s, key, _cast(block[key], getattr(s, key)))
+                    _set(s, key, block[key], cfg_path.name)
 
     # Umgebungsvariablen: MC_<NAME> mit gleichem Namen wie das Feld
     for key in Settings.__dataclass_fields__:
+        if key == "config_notes":
+            continue
         env_value = os.environ.get(f"MC_{key.upper()}")
         if env_value is not None:
-            setattr(s, key, _cast(env_value, getattr(s, key)))
+            _set(s, key, env_value, f"MC_{key.upper()}")
 
     s.mode = s.mode.lower()
+    apply_limits(s)
+    for note in s.config_notes:
+        log.warning("Konfiguration: %s", note)
     return s

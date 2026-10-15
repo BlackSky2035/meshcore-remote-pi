@@ -1,4 +1,4 @@
-import {get, post, put, del} from '../lib/api.js';
+import {get, getQuick, post, put, del} from '../lib/api.js';
 import {esc, ago, fmtTime, mentions, mentionTag, countLabel} from '../lib/util.js';
 import {pushState, enablePush, disablePush, savePrefs, testPush} from '../lib/push.js';
 
@@ -176,16 +176,18 @@ export async function mount(root, ctx) {
     $('slots').textContent = maxCh ? `${channels.length} von ${maxCh} Plätzen belegt` : '';
   }
 
+  let listSeq = 0;
   async function loadList() {
+    const my = ++listSeq;                     // nur die neueste Antwort zählt
     try {
       const d = await get('/api/channels');
-      if (!alive) return;
+      if (!alive || my !== listSeq) return;
       channels = d.channels; maxCh = d.max_channels;
       if (current !== null) $('detailToggle').checked = !!currentChannel()?.show_details;
       $('error').textContent = '';
       if (current !== null && !channels.some(c => c.idx === current)) closeChat();
       renderList();
-    } catch (e) { if (!alive) return; $('error').textContent = e.message; $('list').innerHTML = ''; }
+    } catch (e) { if (!alive || my !== listSeq) return; $('error').textContent = e.message; $('list').innerHTML = ''; }
   }
 
   $('list').onclick = e => {
@@ -291,13 +293,28 @@ export async function mount(root, ctx) {
     }
   }
 
+  // Reihenfolge: eine ältere Antwort überschreibt nie eine schon gezeigte neuere. Sie wird aber NICHT verworfen, nur weil eine neuere noch
+  // unterwegs ist – scheitert die neuere (z. B. nach der Rückkehr aus dem Hintergrund), bliebe der Chat sonst leer.
+  let msgSeq = 0, msgShown = 0;
   async function reloadMessages(keep = false, pending = null) {
     if (current === null) return;
     const idx = current;
-    const msgs = await (pending || get(`/api/channels/${idx}/messages?limit=200`));
-    if (!alive || current !== idx) return;             // inzwischen anderer Kanal offen: alte Antwort verwerfen
+    const my = ++msgSeq;
+    let msgs;
+    try {
+      msgs = await (pending || getQuick(`/api/channels/${idx}/messages?limit=200`));
+    } catch (e) {
+      if (alive && current === idx && msgsFor !== idx) showLoadError(e);    // noch nichts von diesem Kanal zu sehen: Hinweis statt leerer Fläche
+      throw e;
+    }
+    if (!alive || current !== idx || my < msgShown) return;
+    msgShown = my;
     msgsFor = idx;
     renderMessages(msgs, keep);
+  }
+  function showLoadError(e) {
+    $('chat').innerHTML = `<p class="err">Verlauf nicht geladen: ${esc(e.message)}</p><button class="small" id="msgRetry">Erneut laden</button>`;
+    $('msgRetry').onclick = () => { $('chat').innerHTML = '<p class="muted">lade …</p>'; reloadMessages().catch(() => {}); };
   }
 
   // Als gelesen markieren (Server merkt es sich: Glocke und „einmal“-Push werden damit zurückgesetzt).
@@ -321,6 +338,7 @@ export async function mount(root, ctx) {
     $('chatBack').hidden = false;
     closeMenu();
     $('chatTitle').textContent = c.name;
+    if (msgsFor !== idx) { msgsFor = null; $('chat').innerHTML = '<p class="muted">lade …</p>'; }   // nie den Hinweis „Kanal wählen“ unter einem offenen Kanal
     $('chatActions').hidden = false;
     $('detailToggle').checked = !!c.show_details;
     $('chatText').disabled = false; $('chatSend').disabled = sending;
@@ -328,7 +346,7 @@ export async function mount(root, ctx) {
     $('pushMode').value = ps.modes[idx] || 'off';
     // Gelesen-Markierung und Verlauf gleichzeitig anfragen; der Server nennt die alte Markierung (genau, nie veraltet).
     const readP = markRead(idx);
-    const msgsP = get(`/api/channels/${idx}/messages?limit=200`);
+    const msgsP = getQuick(`/api/channels/${idx}/messages?limit=200`);
     msgsP.catch(() => {});
     c.unread = 0;                             // Glocke sofort weg; sonst nutzte ein schnelles Wiederöffnen den alten Zähler
     renderList();
@@ -341,10 +359,16 @@ export async function mount(root, ctx) {
     if (alive && current === idx) { try { $('chatText').focus({preventScroll: true}); } catch { /* alt */ } }
   }
 
+  let backPending = false;                    // unser history.back() läuft schon: nie zweimal zurück (sonst raus aus der App)
   function closeChat() {
     try { const sa = document.getElementById('scrollArea'); if (sa && current !== null) sa.scrollTop = 0; } catch { /* egal */ }   // Liste wieder von oben
-    if (window.history.state?.mcChat) { try { window.history.back(); } catch { /* ohne Verlauf */ } }     // Verlaufseintrag wieder entfernen
+    if (window.history.state?.mcChat && !backPending) {                 // Verlaufseintrag wieder entfernen
+      backPending = true;
+      setTimeout(() => { backPending = false; }, 1000);
+      try { window.history.back(); } catch { /* ohne Verlauf */ }
+    }
     current = null;
+    msgsFor = null;                            // Verlauf ist weg (Hinweis „Kanal wählen“): beim Wiederöffnen erst „lade …“, nie den Hinweis stehen lassen
     wrap.classList.remove('chat-open');
     $('chatBack').hidden = true;
     closeMenu();
@@ -359,6 +383,7 @@ export async function mount(root, ctx) {
   // Reicht der Wisch (ein Drittel der Breite oder schnell), schließt er sich, sonst springt er zurück. Nur waagerechte Wischer
   // nach rechts; senkrechtes Scrollen und Textmarkieren bleiben unberührt. Nur in der einspaltigen Handy-Ansicht (style.css: max-width 640px,
   // dort ist der Chat allein sichtbar) und nicht im offenen Menü: sonst bedeutet Wischen nirgends etwas.
+  const EDGE_PX = 30;
   const singleColumn = () => !window.matchMedia || window.matchMedia('(max-width: 640px)').matches;
   let swipe = null;
   const cleanups = [];                                              // Aufräumen beim Verlassen der Seite (Wisch- und Verlaufs-Listener)
@@ -369,7 +394,10 @@ export async function mount(root, ctx) {
   onDoc('touchstart', e => {
     const t = e.touches && e.touches[0];
     const own = e.target.closest?.('input, textarea, select, dialog, #nav, .nav-backdrop');   // Textfelder, Dialoge und das Menü behalten ihre Wischer
-    swipe = current !== null && t && !own && e.touches.length === 1 && singleColumn() ? {x: t.clientX, y: t.clientY, t: Date.now(), lock: null} : null;
+    // Am linken Rand (iOS-Randwisch) entscheidet der Browser selbst: er geht im Verlauf zurück (→ popstate schließt den Chat). Würden wir
+    // dort auch schließen, ginge es ZWEI Schritte zurück – aus der App hinaus auf eine leere Seite.
+    const edge = t && t.clientX < EDGE_PX;
+    swipe = current !== null && t && !own && !edge && e.touches.length === 1 && singleColumn() ? {x: t.clientX, y: t.clientY, t: Date.now(), lock: null} : null;
   });
   onDoc('touchmove', e => {
     const t = e.touches && e.touches[0];
@@ -393,7 +421,7 @@ export async function mount(root, ctx) {
   });
   onDoc('touchcancel', () => { swipe = null; slide(0, true); });
 
-  const onPop = () => { if (current !== null) closeChat(); };      // Browser-„Zurück“ (auch der Randwisch am iPhone) = zurück zur Kanalliste
+  const onPop = () => { backPending = false; if (current !== null) closeChat(); };      // Browser-„Zurück“ (auch der Randwisch am iPhone) = zurück zur Kanalliste
   window.addEventListener('popstate', onPop);
   cleanups.push(() => window.removeEventListener('popstate', onPop));
 
@@ -521,6 +549,9 @@ export async function mount(root, ctx) {
     } catch (e) { if (alive) $('error').textContent = e.message; }
   };
   $('keyClose').onclick = () => { $('keyOut').value = ''; $('dlgKey').close(); };
+  // Schlüssel beim Schließen immer leeren, auch per Esc oder Zurück (das löst nur „close“ aus, keinen Klick)
+  $('dlgKey').addEventListener('close', () => { $('keyOut').value = ''; });
+  $('dlg').addEventListener('close', () => { $('fSecret').value = ''; });
   $('keyCopy').onclick = async () => {
     try { await navigator.clipboard.writeText($('keyOut').value); $('keyCopy').textContent = 'Kopiert'; }
     catch { $('keyOut').select(); }

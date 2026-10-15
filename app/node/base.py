@@ -27,18 +27,39 @@ def jsonable(obj: Any) -> Any:
     return str(obj)
 
 
+def hop_bytes(path_hash_mode) -> int:
+    """Pfad-Kennung → Bytes je Zwischenstation (0/1/2 = 1/2/3 Byte). Unbekannt oder ungültig → 1 Byte (Standard der Firmware)."""
+    return path_hash_mode + 1 if isinstance(path_hash_mode, int) and 0 <= path_hash_mode <= 2 else 1
+
+
+def split_path(hexpath: str, size: int, hops: int | None = None) -> list[str]:
+    """Hex-Pfad in Hop-Kennungen zu je `size` Byte zerlegen (höchstens `hops` Stück, ein unvollständiger Rest fällt weg)."""
+    step = max(1, int(size or 1)) * 2
+    hexpath = str(hexpath or "")
+    if hops is not None:
+        hexpath = hexpath[:max(0, hops) * step]
+    return [hexpath[i:i + step] for i in range(0, len(hexpath) - len(hexpath) % step, step)]
+
+
+def trace_hash_bytes(path_hash_mode) -> tuple[int, int]:
+    """Kennungslänge für einen Trace passend zur Pfad-Kennung des Nodes: (Bytes, flags für send_trace).
+    Trace kennt nur 1/2/4 Byte (flags 0/1/2): 3 Byte (Modus 2) → 4 Byte, das ist eindeutiger, nie kürzer."""
+    return {0: (1, 0), 1: (2, 1), 2: (4, 2)}.get(path_hash_mode if isinstance(path_hash_mode, int) else 0, (1, 0))
+
+
 def normalize_contact(c: dict) -> dict:
     """Einheitliches Kontaktformat für API und Oberfläche.
 
     Felder: public_key, name, type (int), type_name, lat, lon (None wenn unbekannt),
-    last_advert (Unix-Zeit oder None), path_len (-1 = Flood, None = unbekannt).
+    last_advert (Unix-Zeit oder None), path_len (Zwischenstationen; -1 = Flood, None = unbekannt),
+    path (Hop-Kennungen, je `path_hash_size` Byte).
     """
     ctype = c.get("type", 0)
     path: list[str] = []
     plen, raw_path = c.get("path_len"), str(c.get("out_path") or "")
+    size = hop_bytes(c.get("path_hash_mode"))         # so lang ist jede Kennung in DIESEM Pfad (Pfad-Kennung beim Lernen des Wegs)
     if isinstance(plen, int) and plen > 0 and raw_path:
-        hexs = raw_path[:plen * 2]                      # Annahme: 1 Byte je Zwischenstation (Pfad-Kennung 0)
-        path = [hexs[i:i + 2] for i in range(0, len(hexs) - len(hexs) % 2, 2)]
+        path = split_path(raw_path, size, plen)
     lat, lon = c.get("lat"), c.get("lon")
     if lat in (None, 0, 0.0) and lon in (None, 0, 0.0):
         lat = lon = None
@@ -52,6 +73,7 @@ def normalize_contact(c: dict) -> dict:
         "last_advert": c.get("last_advert") or None,
         "path_len": c.get("path_len"),
         "path": path,
+        "path_hash_size": size,
     }
 
 

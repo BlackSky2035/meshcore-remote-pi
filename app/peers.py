@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 from urllib.parse import urlparse
 
+from .webpush import no_redirect_open
+
 log = logging.getLogger("meshcore-remote")
 POLL_S = 60.0
 FAILS_BEFORE_ALERT = 3
@@ -64,7 +66,7 @@ def token_ok(expected: str, given: str | None) -> bool:
 def fetch_summary(peer: Peer) -> dict:
     """Blockierend (läuft im Thread). Wirft bei jedem Fehler."""
     req = urllib.request.Request(peer.url + "/api/peer/summary", headers={"X-Peer-Token": peer.token, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:                     # noqa: S310 (Adresse stammt aus der eigenen Konfiguration)
+    with no_redirect_open(req, timeout=TIMEOUT_S) as r:                           # keine Weiterleitung: das Token geht nur an die eingetragene Adresse
         data = r.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("Antwort zu groß")

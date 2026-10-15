@@ -1,6 +1,7 @@
 """REST-Endpunkte."""
 from __future__ import annotations
 
+import asyncio
 import functools
 import secrets
 import subprocess
@@ -853,9 +854,22 @@ def make_router(rt: Runtime) -> APIRouter:
                 parts.append(f"{field}: {msg}" if field else msg)
             raise HTTPException(status_code=422, detail="; ".join(parts))
 
+    async def _channel_exists(kind: str, cfg: dict) -> None:
+        """Kanal-Ping nur auf einen eingerichteten Platz. Ist die Kanalliste gerade nicht lesbar (Node getrennt, Zeitlimit),
+        wird nicht blockiert: die Prüfung soll nur Fehlbedienung abfangen, kein Speichern verhindern."""
+        if kind != "channel_ping" or not node.connected:
+            return
+        try:
+            chans = await asyncio.wait_for(node.channels(), 5)
+        except Exception:
+            return
+        if not any(c.get("idx") == cfg["channel"] and c.get("name") for c in chans):
+            raise HTTPException(status_code=422, detail=f"Kanalplatz {cfg['channel']} ist auf dem Node nicht eingerichtet")
+
     @r.post("/rules")
     async def add_rule(body: RuleIn) -> dict:
         cfg = _validated(body)
+        await _channel_exists(body.kind, cfg)
         rid = await store.add_rule(body.kind, body.name, cfg, body.enabled)
         return await store.rule(rid)
 
@@ -867,6 +881,8 @@ def make_router(rt: Runtime) -> APIRouter:
         if existing["kind"] != body.kind:
             raise HTTPException(status_code=422, detail="Regelart kann nicht geändert werden")
         cfg = _validated(body)
+        if cfg != existing["config"]:                   # unveränderte Regel (z. B. nur Ein/Aus) nie an der Kanalprüfung scheitern lassen
+            await _channel_exists(body.kind, cfg)
         await store.update_rule(rule_id, body.name, cfg, body.enabled)
         auto.reschedule(rule_id)
         return await store.rule(rule_id)

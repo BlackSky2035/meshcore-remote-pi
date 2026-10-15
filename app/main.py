@@ -49,6 +49,7 @@ def create_app(rt: Runtime) -> FastAPI:
             rt.state["problems"].append(f"Automatik nicht gestartet: {type(e).__name__}: {e}")
         if rt.automation.start_note:
             rt.state["problems"].append(rt.automation.start_note)
+        rt.state["problems"].extend(getattr(rt.settings, "config_notes", []))   # korrigierte Werte, fehlerhafte config.toml
         task = asyncio.create_task(Supervisor(rt).run())
         stats_task = asyncio.create_task(rt.stats.run()) if rt.stats else None
         room_task = asyncio.create_task(rt.room.run()) if rt.room else None

@@ -110,7 +110,14 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit (EU-Bänder: Duty Cycle).
   Reichweite; gleiche 1-Byte-Hashes sind nicht unterscheidbar. An echter Hardware NICHT getestet.
 - Platzhalter in Antworten werden per `replace` ersetzt, nicht per `format` (keine
   Format-String-Injektion).
-- Globaler Pausenschalter, bleibt über Neustarts erhalten.
+- Globaler Pausenschalter, bleibt über Neustarts erhalten. Greift sofort: `SendBudget.halted` (= `automation.paused`) wird vor UND nach der Wartezeit
+  geprüft, Ablehnungsgrund in `budget.why` („Automatik pausiert“/„Stundenlimit erreicht“). Test `test_pause_during_budget_wait_stops_the_send`.
+- Auto-Antwort: Auslöser nur aus Leerzeichen → 422 (`AutoReplyConfig._match_not_blank`). Kanal-Ping: Platz muss auf dem Node eingerichtet sein
+  (`api._channel_exists`, 422; Liste nicht lesbar → nicht blockieren; unveränderte Regel beim Ein/Aus nicht prüfen), Formular `required`, leer nie als 0.
+- Konfigurationsgrenzen (`config.LIMITS`, `apply_limits`, nicht aufweichen): `auto_min_gap_s` ≥ 5, `auto_max_per_hour` ≤ 60, `manual_min_gap_s` ≥ 1,
+  `manual_max_per_min` ≤ 30 (Funk-Grenzen nicht im Modus sim), `retention_days` ≥ 7 (immer). Hinweise in `settings.config_notes` → `problems`.
+  Falscher Typ → Standardwert + Hinweis. TOML-Syntaxfehler → Standardwerte mit `mode = "serial"` + Hinweis, ABER mit `access_password` in der Datei (ohne
+  `MC_ACCESS_PASSWORD`) → `SystemExit` (nie ungewollt ohne Anmeldung). Tests: `tests/test_small_fixes.py`.
 - Startverzögerung (20 s) und Staffelung (10 s) der Regeln nach Neustart; der nächste Termin
   wird vor der Ausführung gesetzt, damit Fehler nie zu Dauerschleifen führen.
   Der letzte Lauf je Regel steht in `settings` (`rule_last_run_<id>`, Wanduhr): nach Neustart, Update oder Bearbeiten/Ein-Aus-Schalten einer Regel
@@ -324,7 +331,8 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 ## Anmeldung (optional)
 - `access_password` (config.toml `[server]` oder `MC_ACCESS_PASSWORD`); leer = aus. `auth.py`: Cookie `mc_session` (HttpOnly, SameSite=Strict, bei https Secure),
   30 Tage, HMAC aus dem Passwort. Middleware in `main.py` schützt alles unter `/api/` und `/ws`. OFFEN bleiben: `/api/health`, `/api/version` (Watchdog-Prüfung!),
-  `/api/auth/*`, `/api/peer/summary` (eigenes Token), Seitenhülle und `/static`. Nach 5 Fehlversuchen in 60 s Sperre für 60 s (global).
+  `/api/auth/*`, `/api/peer/summary` (eigenes Token), Seitenhülle und `/static`. `/docs`, `/redoc`, `/openapi.json` sind mit Passwort geschützt (`API_DOCS`).
+  Push und Stationsabfrage folgen keiner Weiterleitung (`webpush.no_redirect_open`). Passwortdatei: `os.fchmod(fd, 0o600)` vor dem Schreiben. Nach 5 Fehlversuchen in 60 s Sperre für 60 s (global).
 - Rechnernamen- und Fremdseiten-Schutz (`hostguard.py`, Middleware + `/ws` in `main.py`, gilt AUCH ohne Passwort, nicht aufweichen): Host nur IP, localhost, `*.ts.net`,
   eigener Rechnername (auch `.local`) oder `allowed_hosts` (sonst 403, gegen DNS-Rebinding); `/api/…` und `/ws`: `Sec-Fetch-Site: cross-site` → 403/1008, `same-origin`/`none` → ok,
   sonst entscheidet `Origin` STRENG (`origin_ok`): gleich Host bzw. X-Forwarded-Host, eigener Name (Rechnername, `.local`, `<name>.<tailnet>.ts.net`) oder `allowed_hosts` –
@@ -333,7 +341,11 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 - Nicht aufweichen: neue `/api/`-Pfade sind automatisch geschützt; nichts mit Daten auf die offene Liste setzen. Passwort steht im Klartext in config.toml.
 
 ## Weitere Seiten (alle im Simulator getestet, nicht an Hardware)
-- **Netz** (`network.py`, `/api/network`, `pages/network.js`): Pfade aus `contact.path` (`out_path`, ANNAHME 1 Byte je Hop), Nachbarlisten aus Tabelle `neighbour_reports`
+- **Pfad-Kennung** (0/1/2 = 1/2/3 Byte je Hop): `node/base.py` `hop_bytes`, `split_path`, `trace_hash_bytes`. Kontakte: `out_path_hash_mode` der Bibliothek →
+  `path_hash_mode` → `normalize_contact` (`path`, `path_hash_size`); Nachrichten: `path_hash_mode` des Pakets; Trace: Pfad-Kennung des eigenen Nodes
+  (`RealNode._path_hash_mode` aus device_query, Modus 2 → 4 Byte, flags 2). Nie mehr fest 1 Byte annehmen. Simulator: Bob mit 2-Byte-Pfad.
+  An Hardware NICHT getestet. Tests: `tests/test_small_fixes.py`, `tests/test_real_channels.py` (trace).
+- **Netz** (`network.py`, `/api/network`, `pages/network.js`): Pfade aus `contact.path` (Kennungslänge je Kontakt, `path_hash_size`), Nachbarlisten aus Tabelle `neighbour_reports`
   (wird beim Abruf in „Verwalten“ gefüllt; nur die neueste Meldung je Repeater). Mehrdeutige Kennungen werden als „?“ gezeigt.
 - **Sensoren** (`sensor_readings`, `/api/sensors/*`, `pages/sensors.js`; **bisher gar nicht an echter Hardware getestet**, auch die Telemetrie-Abfrage nicht): alle Zahlenwerte aus der Telemetrie (Cayenne LPP), Listen wie GPS werden übersprungen.
   Die Akku-Regel mit „Temperatur“ speichert mit.
@@ -363,6 +375,19 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
 - Kanal-Chat am Handy: Wisch nach rechts = zurück zur Kanalliste (`pages/channels.js`), nur in der einspaltigen Ansicht (`max-width: 640px`, wie in `style.css`), nicht wenn er im Menü (`#nav`, `.nav-backdrop`) beginnt; sonst hat Wischen nirgends eine Funktion. Ein offener Chat legt einen Verlaufseintrag an (`mcChat`), Browser-Zurück/iOS-Randwisch schließt den Chat; ein verwaister Eintrag wird beim Öffnen der Seite ersetzt. Doppeltippen erwähnt (eigene Erkennung, weil iOS `dblclick` nicht zuverlässig liefert). Entwurf und Erwähnung bleiben beim Kanalwechsel nicht hängen. Offener Chat am Handy: Es scrollt die ganze Seite (`#scrollArea`), nicht ein innerer Bereich; Kopf (`.chat-head`) und Eingabe (`.chat-compose`) sind `sticky`. `scroller()` in `channels.js` wählt den Bereich. Neue Nachrichten springen nur nach unten, wenn man schon unten war (`reloadMessages(0, 'follow')`).
 - Doppelklick-Schutz: `locked(btn, fn)` in `lib/util.js` (Regel speichern, Pause, Kontakt hinzufügen), Wartungsknöpfe mit `maintBusy`, Regel-Schalter während der Anfrage gesperrt.
   Zähler unter Eingabefeldern: `countLabel` (Zeichen, bei Umlauten/Emojis zusätzlich Byte, Warnung über der Grenze); die genaue Byte-Grenze der Firmware ist NICHT an Hardware geprüft.
+- `app.js` `route()`: jede Seite bekommt einen eigenen Container (`display: contents`), späte Schreibzugriffe einer verlassenen Seite landen im
+  abgehängten Container (auch Handler auf `root`, z. B. Raum). WebSocket: Neuverbindung 2 s verdoppelt bis 30 s; nach Wiederverbinden `_resume`,
+  Status und Glocke neu. Kanalschlüssel-Dialoge leeren sich beim Ereignis `close` (auch Esc).
+- Kanal-Chat nach Rückkehr aus dem Hintergrund (beobachtet: Kanaltitel, darunter „Links einen Kanal wählen“, nichts lädt): `closeChat` setzt `msgsFor = null`,
+  `openChat` zeigt sofort „lade …“; `reloadMessages` verwirft eine ältere Antwort nur, wenn schon eine neuere GEZEIGT wurde (`msgShown`), nicht wenn eine neuere
+  noch läuft; scheitert das Laden und ist noch nichts zu sehen → Hinweis mit „Erneut laden“ (`showLoadError`). Verlauf über `getQuick` (`lib/api.js`: 8 s Zeitlimit,
+  ein neuer Versuch; NUR für reine Datenbank-Abfragen, nie für Funk). Randwisch: Wischer, die in den linken `EDGE_PX` (30 px) beginnen, gehören dem Browser
+  (sonst zwei Schritte zurück → leere Seite außerhalb der App); `closeChat` ruft `history.back()` höchstens einmal (`backPending`). UI-Smoke „Randwisch“, „Erneut laden“.
+- Home-Bildschirm-App (iOS, `STANDALONE` in `app.js`): vor der ersten App-Seite liegt oft about:blank (weiße Seite ohne Rückweg).
+  Erster eigener Verlaufseintrag = Boden (`{mcRoot}`), darüber `{mcApp}`; erreicht `popstate` den Boden, wird sofort wieder ein Eintrag gelegt.
+  Nur installiert, nicht im Browser-Tab. ACHTUNG: in `app.js` ist `history` die Ereignisliste, immer `window.history` schreiben. Im Browser (Chromium,
+  `navigator.standalone` vorgetäuscht) geprüft: 5× Zurück bleibt in der App; im Tab führt das 2. Zurück wie gewohnt zur vorigen Seite.
+- Bewusst so: Fehlermeldungen im Browser zeigen weiter die Details (`Interner Fehler: Typ: Text`), weil sie bei der Fehlersuche helfen.
 - Seiten verwerfen veraltete Antworten über einen Ladezähler und `alive` (z. B. Akku, Sensoren, Karte, Kanal-/Kontakt-Chat); neue Ladefunktionen genauso bauen. Senden per Enter ist gegen Doppelsenden gesperrt, solange gesendet wird.
 
 ## Wartungsmodus (App)

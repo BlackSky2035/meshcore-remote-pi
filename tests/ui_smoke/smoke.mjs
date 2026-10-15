@@ -55,6 +55,7 @@ const status = await (await fetch('/api/status')).json();
   check(root.querySelector('#status').textContent.includes('SimNode'), 'Dashboard zeigt Node-Status');
   click(root.querySelector('#advert')); await sleep(200);
   check(root.querySelector('#error').textContent === '', 'Advert senden ohne Fehler');
+  check(/Advert gesendet/.test(root.querySelector('#advertResult').textContent), 'Advert: Bestätigung „Advert gesendet“ sichtbar');
   // USB-Karte: Zustand, Verfügbarkeit, Abziehen/Einstecken (Simulation)
   const usbText = () => root.querySelector('#usbCard').textContent;
   check(!root.querySelector('#usbCard').hidden && root.querySelector('#usbState').textContent.includes('verbunden'), 'USB-Karte zeigt „verbunden“');
@@ -298,6 +299,22 @@ const status = await (await fetch('/api/status')).json();
   check(root.querySelector('#chatTitle').textContent === 'Kein Kanal gewählt' && !window.history.state?.mcChat, 'Browser-Zurück schließt den Chat');
   swipeBy(150, 0);                                                    // ohne offenen Chat: nichts passiert
   [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(400);
+  // Randwisch (Start am linken Rand): gehört dem Browser, unser Wischer schließt NICHT zusätzlich (sonst zwei Schritte zurück → leere Seite)
+  { const origBack = window.history.back.bind(window.history); let backs = 0;
+    window.history.back = () => { backs++; };
+    touch('touchstart', 10, 300); touch('touchend', 220, 305); await sleep(100);
+    check(root.querySelector('#chatTitle').textContent === 'UI-Test' && backs === 0, 'Randwisch: Chat bleibt für den Browser, kein eigenes Zurück');
+    window.history.back = origBack; }
+  // Verlauf lädt nicht (z. B. tote Verbindung nach dem Hintergrund): Hinweis mit „Erneut laden“ statt „Kanal wählen“ unter offenem Kanal
+  { const uiIdx = st.channels.find(c => c.name === 'UI-Test').idx;
+    click(root.querySelector('#chatBack')); await sleep(300);
+    fetchHook = u => u.startsWith(`/api/channels/${uiIdx}/messages`) ? Promise.resolve(new Response('{"detail":"kaputt"}', {status: 503, headers: {'content-type': 'application/json'}})) : null;
+    [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(400);
+    check(root.querySelector('#chatTitle').textContent === 'UI-Test' && !!root.querySelector('#msgRetry') && !root.querySelector('#chat').textContent.includes('Kanal wählen'),
+      'Verlauf nicht geladen: Hinweis mit „Erneut laden“');
+    fetchHook = null;
+    click(root.querySelector('#msgRetry')); await sleep(400);
+    check(!root.querySelector('#msgRetry') && root.querySelector('#chat .bubble'), '„Erneut laden“ zeigt den Verlauf'); }
   // mit Mitziehen (touchmove): langsam und zu kurz -> springt zurück; weit genug -> gleitet weg und schließt
   const drag = async (dx, dt) => { touch('touchstart', 100, 300); touch('touchmove', 100 + dx / 2, 302); touch('touchmove', 100 + dx, 304);
     await sleep(dt); touch('touchend', 100 + dx, 304); await sleep(350); };
@@ -386,6 +403,10 @@ const status = await (await fetch('/api/status')).json();
   check(/^[0-9a-f]{32}$/.test(root.querySelector('#keyOut').value), 'Schlüssel wird angezeigt (32 Hex-Zeichen)');
   click(root.querySelector('#keyClose'));
   check(root.querySelector('#keyOut').value === '', 'Schlüssel wird beim Schließen geleert');
+  click(root.querySelector('#keyBtn')); await sleep(300);
+  root.querySelector('#dlgKey').dispatchEvent(new window.Event('close'));      // Esc/Zurück: nur „close“, kein Klick
+  check(root.querySelector('#keyOut').value === '', 'Schlüssel wird auch beim Schließen per Esc geleert');
+  try { root.querySelector('#dlgKey').close(); } catch { /* jsdom ohne dialog */ }
 
   click(root.querySelector('#delBtn')); await sleep(400);
   check(items().length === 2, 'Kanal wurde gelöscht');

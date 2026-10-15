@@ -114,7 +114,7 @@ class Room:
             await self._log("warn", f"Raum: Antwort an {name} übersprungen (Anteil des Raums am Sendebudget für diese Stunde erreicht)")
             return "error"
         if not await self.budget.acquire(n):
-            await self._log("warn", f"Raum: Antwort an {name} übersprungen (Stundenlimit erreicht)")
+            await self._log("warn", f"Raum: Antwort an {name} übersprungen ({self.budget.why})")
             return "error"
         self._room_sent.append((self._clock(), n))
         line = self._line(text)

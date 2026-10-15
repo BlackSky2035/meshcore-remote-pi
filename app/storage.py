@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS messages (
     auto INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_messages_peer_ts ON messages(peer, ts);
+CREATE INDEX IF NOT EXISTS idx_messages_kind_dir_peer_id ON messages(kind, direction, peer, id);   -- Ungelesen-Zählung je Kanal ohne vollen Tabellenscan
 
 CREATE TABLE IF NOT EXISTS msg_repeats (       -- gehörte Wiederholungen unserer Kanalnachrichten
     id INTEGER PRIMARY KEY AUTOINCREMENT,

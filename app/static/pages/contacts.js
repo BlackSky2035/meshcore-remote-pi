@@ -84,16 +84,14 @@ export async function mount(root, ctx) {
       </tr>`).join('') : '<tr><td colspan="5" class="muted">Keine Kontakte gefunden.</td></tr>';
   }
 
+  let loadSeq = 0;
   async function load() {
-    try {
-      contacts = await get('/api/contacts');
-      if (!alive) return;
-      $('error').textContent = '';
-    } catch (e) {
-      contacts = [];
-      if (!alive) return;
-      $('error').textContent = e.message;
-    }
+    const my = ++loadSeq;                     // nur die neueste Antwort zählt
+    let list, err = '';
+    try { list = await get('/api/contacts'); } catch (e) { list = []; err = e.message; }
+    if (!alive || my !== loadSeq) return;
+    contacts = list;
+    $('error').textContent = err;
     render();
   }
 
@@ -161,13 +159,15 @@ export async function mount(root, ctx) {
       <div class="meta">${fmtTime(m.ts)}${m.auto ? ' · automatisch' : ''}</div></div>`;
   }
 
+  let chatSeq = 0;
   async function openChat(c) {
     chatKey = c.public_key;
     $('chatCard').hidden = false;
     $('chatTitle').textContent = `Nachrichten mit ${c.name}`;
     const key = c.public_key;
+    const my = ++chatSeq;
     const msgs = await get(`/api/messages?peer=${key.slice(0, 12)}&limit=100`);
-    if (!alive || chatKey !== key) return;             // inzwischen anderer Chat offen (oder geschlossen): alte Antwort verwerfen
+    if (!alive || chatKey !== key || my !== chatSeq) return;   // anderer Chat offen, geschlossen oder neuere Abfrage unterwegs: verwerfen
     $('chat').innerHTML = msgs.map(bubble).join('') || '<p class="muted">Noch keine Nachrichten.</p>';
     $('chat').scrollTop = $('chat').scrollHeight;
     $('chatText').focus();

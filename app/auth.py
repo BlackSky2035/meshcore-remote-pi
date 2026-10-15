@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 COOKIE = "mc_session"
 SESSION_S = 30 * 86400
+API_DOCS = ("/docs", "/redoc", "/openapi.json")
 OPEN_API = ("/api/health", "/api/version", "/api/peer/summary", "/api/maintenance", "/api/sends")     # Stationsabfrage prüft ihr eigenes Token
 MAX_FAILS, FAIL_WINDOW_S, LOCK_S = 5, 60.0, 60.0
 
@@ -51,6 +52,8 @@ class Auth:
             return False
 
     def allowed(self, path: str) -> bool:
+        if path in API_DOCS or path.startswith("/docs/"):
+            return False                       # Schnittstellen-Beschreibung nur angemeldet (verrät alle Endpunkte)
         return not path.startswith("/api/") and path != "/ws" or path in OPEN_API or path.startswith("/api/auth/")
 
     def locked(self) -> float:

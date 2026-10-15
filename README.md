@@ -68,7 +68,7 @@ Der **Watchdog** (Updates, Überwachung, Steuerung) hat eine eigene Oberfläche,
 | Akku | Akku- und Temperaturverlauf je überwachtem Repeater, Diagramm und Tabelle, CSV; beide Diagramme haben dieselbe Zeitachse (untereinander deckungsgleich), so lassen sich Akku und Temperatur direkt vergleichen. Du kannst bis zu **drei Repeater** wählen („Repeater 1, 2, 3“, jeder mit eigener Farbe und durchgezogener Linie; die Farbe ist in Akku- und Temperatur-Diagramm für denselben Repeater gleich und neben dem Auswahlfeld als Muster zu sehen); unter jedem Auswahlfeld steht sein letzter Wert (Akku und Temperatur mit Alter). In der Tabelle schaltest du über Reiter zwischen den gewählten Repeatern um; „CSV“ lädt die Werte des gerade gewählten Repeaters herunter. Die Auswahl wird beim Ändern auf dem Server gespeichert und bleibt auf allen Geräten bestehen, bis du sie änderst. „Jetzt abfragen“ fragt alle gewählten Repeater **nacheinander** ab und zeigt den neuen Wert jeweils sofort unter dem Repeater, mit einer Pause dazwischen (Standard 20 s, einstellbar mit `battery_poll_gap_s` unter `[automation]`), damit die Stromversorgung des Pi beim Senden nicht einbricht |
 | Automatik | Regeln für Akku-Überwachung, Pings, Auto-Antworten und automatische Adverts, Pause-Schalter, Sendebudget, Protokoll |
 | Raum | Software-Raum per Direktnachricht (Beiträge, Mitglieder), Webseite zum Mitschreiben; **nicht mit echten Teilnehmern getestet** |
-| Netz | Funkwege und von Repeatern gemeldete Nachbarn als Grafik; **nicht an echter Hardware getestet** |
+| Netz | Funkwege und von Repeatern gemeldete Nachbarn als Grafik; Repeater-Kennungen mit 1, 2 oder 3 Byte (Pfad-Kennung), so wie der Weg gelernt wurde; **nicht an echter Hardware getestet** |
 | Funk | Zähler und Rauschpegel des eigenen Nodes im Verlauf; **nicht an echter Hardware getestet** |
 | Suche | alle Nachrichten durchsuchen, Stichwörter mit Push-Meldung |
 | Mein Node | Einstellungen des eigenen Nodes, Sicherung/Wiederherstellung; Standardfunktionen am echten Node getestet, nicht jedes Detail |
@@ -120,10 +120,19 @@ LoRa ist ein geteiltes Medium mit begrenzter Sendezeit. Die Automatik schützt e
   antworten. Arten: *Direkt-Ping (Zero-Hop)* für Repeater/Rooms in direkter Funkreichweite
   (Trace-Paket, zeigt die Signalstärke SNR hin und zurück), *Statusabfrage* (auch über mehrere Hops)
   und *Nachricht* (für Clients). Der *Kanal-Ping* postet einen Text regelmäßig in einen Kanal.
+  Der Direkt-Ping nutzt dieselbe Kennungslänge wie die Pfad-Kennung des eigenen Nodes (1 oder 2 Byte, bei 3 Byte 4 Byte; an Hardware nicht getestet).
 - **Auto-Antworten** beginnen mit einer Erwähnung des Absenders (`@[Name] …`) und werden nie auf Nachrichten beantwortet, die selbst mit einer Erwähnung beginnen,
   damit sich zwei Auto-Antworter nicht endlos hin und her schreiben. Dazu gibt es eine
-  Abkühlzeit je Absender.
-- **Pause-Schalter** in der Oberfläche, bleibt über Neustarts erhalten.
+  Abkühlzeit je Absender. Ein Auslöser nur aus Leerzeichen wird abgelehnt (er träfe fast jede Nachricht).
+- **Kanal-Ping nur auf eingerichtete Kanäle:** Ohne Kanal auf dem Node lässt sich die Regel nicht speichern (früher zielte sie still auf Platz 0).
+- **Pause-Schalter** in der Oberfläche, bleibt über Neustarts erhalten. Er greift sofort: Auch eine Sendung, die gerade auf den Mindestabstand
+  wartet, geht nach dem Pausieren nicht mehr raus (Protokoll: „… abgebrochen: Automatik pausiert“).
+- **Schutz vor Tippfehlern in der Konfiguration:** Werte außerhalb sicherer Grenzen werden auf die Grenze gesetzt und oben als Hinweis gezeigt
+  (die Standardwerte bleiben unverändert): Mindestabstand automatisch mindestens 5 s, höchstens 60 automatische Sendungen je Stunde, von Hand
+  mindestens 1 s Abstand und höchstens 30 je Minute, Verlauf mindestens 7 Tage aufbewahren (`retention_days = 0` löschte früher alles).
+  Ein Wert vom falschen Typ (z. B. Text statt Zahl) behält den Standard. Ist die `config.toml` fehlerhaft (Syntaxfehler), startet das Programm mit
+  Standardwerten (echter Node per USB, Port 8000 nur auf diesem Rechner) und zeigt einen Hinweis – außer dort steht ein `access_password`: dann startet es bewusst
+  NICHT, damit die Seite nie ungewollt ohne Anmeldung läuft. Im Simulator gelten die Funk-Grenzen nicht (kein Funk).
 - **Intervall gilt auch über Neustarts:** Jede Regel merkt sich, wann sie zuletzt lief. Nach einem Update, Neustart oder wenn du eine Regel bearbeitest bzw. aus- und einschaltest, wird nicht sofort gesendet, sondern frühestens ein Intervall nach dem letzten Lauf. Pingen zwei aktive Regeln denselben Kanal, weist die Regelliste darauf hin.
 - **Tempolimit auch von Hand:** Nachricht, Kanalnachricht, Advert, Ping und „Abfragen“ aus der Oberfläche gehen höchstens alle 2 s und
   höchstens 20 Funkpakete je Minute (`[automation] manual_min_gap_s`, `manual_max_per_min`). Zu schnell → „Zu schnell – bitte … s warten“, es wird nichts gesendet.
@@ -283,6 +292,18 @@ Einzelne Fehler sollen nie das ganze Programm beenden; stattdessen gibt es eine 
   irgendetwas geschickt hat. Nach zwei verpassten Herzschlägen wird neu verbunden. Nur im Simulator/mit nachgebauter Bibliothek getestet.
 - Der Node-Status darf ausfallen, ohne dass die Seite leer bleibt (`node_error`). `/api/health` kostet nichts (Selbsttest).
 - Im Browser werden Fehler als Banner angezeigt statt still zu verschwinden; „Server nicht erreichbar“ wird verständlich gemeldet.
+- **Neu verbinden ohne Dauerfeuer:** Ist der Server weg, versucht die Seite es nach 2, 4, 8 … bis höchstens 30 s erneut. Nach dem Wiederverbinden
+  lädt sie Status, Glocke und die offene Seite (z. B. den Kanal-Chat) neu, damit verpasste Nachrichten erscheinen.
+- **Kanal-Chat lädt zuverlässig:** Beim Öffnen steht sofort „lade …“. Hängt die Verbindung nach längerer Pause im Hintergrund, bricht die Seite die
+  Abfrage nach 8 s ab und fragt einmal neu; klappt es trotzdem nicht, steht dort ein Hinweis mit „Erneut laden“. Wischen vom linken Rand
+  (iPhone-Zurück) übernimmt allein der Browser, damit nicht Browser und Seite gleichzeitig zurückgehen.
+- **Advert-Knöpfe melden Erfolg:** Unter „Advert senden“ / „Advert (Flood)“ steht während des Sendens „sende …“ und danach
+  „Advert gesendet (…)“ mit Uhrzeit.
+- **Zurück führt nicht aus der App:** In der Home-Bildschirm-App (iPhone) liegt vor der ersten Seite oft eine leere Seite; ein Zurück zu viel
+  zeigte dann eine weiße Seite ohne Rückweg. Jetzt bleibt man in der App, egal wie oft man zurückwischt. Im normalen Browser-Tab bleibt
+  „Zurück“ wie gewohnt. Im Browser nachgestellt, am iPhone selbst nicht geprüft.
+- **Keine veralteten Anzeigen:** Jede Seite läuft in einem eigenen Bereich; eine späte Antwort einer verlassenen Seite landet nie in der neuen.
+  Knoten-Verlauf, Kanalliste, Kanal-Chat und Kontakt-Chat zeigen nur die Antwort der neuesten Abfrage.
 Der Watchdog (eigenes Projekt) hat zusätzlich eine Selbstüberwachung durch systemd, siehe dessen README.
 
 ## Sicherheit
@@ -310,6 +331,12 @@ Deshalb gilt im Hauptprogramm:
   Werkzeuge ohne Browser (Watchdog, curl, andere Station) sind davon nicht betroffen. Im Browser (Chromium) geprüft: eigene
   Oberfläche über IP und `localhost` geht, eine fremde Seite bekommt weder Formular-Aufrufe noch die Live-Verbindung durch.
   Hinter `tailscale serve` mit einem Tailscale-Namen, der nicht dem Rechnernamen entspricht: diesen Namen in `allowed_hosts` eintragen.
+- **API-Beschreibung nur angemeldet:** `/docs`, `/redoc` und `/openapi.json` brauchen bei gesetztem Passwort eine Anmeldung.
+- **Keine Weiterleitungen:** Push-Meldungen und die Abfrage anderer Stationen folgen keiner Weiterleitung (3xx). So kann ein Ziel die Anfrage
+  nicht auf eine interne Adresse umlenken, und das Stations-Token geht nur an die eingetragene Adresse.
+- **Passwortdatei** der Repeater (`data/repeater_secrets.json`) bekommt beim Schreiben immer die Rechte 600, auch wenn eine alte Zwischendatei offener war.
+- Fehlermeldungen im Browser enthalten bewusst die Details (Fehlerart, Text), weil sie bei der Fehlersuche helfen; die Seite ist nur für das
+  eigene Netz bzw. Tailnet gedacht.
   Ein Passwort bleibt trotzdem sinnvoll (zweite Schicht, z. B. bei einem entsperrten Handy in fremder Hand).
 
 ### So sicherst du es ab (Checkliste)

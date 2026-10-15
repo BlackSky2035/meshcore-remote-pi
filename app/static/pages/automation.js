@@ -213,7 +213,7 @@ export async function mount(root, ctx) {
     if (kind === 'channel_ping') {
       const opts = channels.map(ch => `<option value="${ch.idx}" ${ch.idx === c.channel ? 'selected' : ''}>${esc(ch.name)} (Platz ${ch.idx})</option>`).join('');
       return nameField + `
-        <label class="field"><span>Kanal</span><select name="channel">${opts || '<option value="">Keine Kanäle auf dem Node</option>'}</select></label>
+        <label class="field"><span>Kanal</span><select name="channel" required>${opts || '<option value="">Keine Kanäle auf dem Node</option>'}</select></label>
         <label class="field"><span>Intervall in Minuten (mindestens 15, weil alle im Kanal es empfangen)</span>
           <input type="number" name="interval_min" min="15" max="1440" value="${c.interval_min}"></label>
         <label class="field"><span>Text (wird unverändert in den Kanal gesendet)</span>
@@ -277,7 +277,7 @@ export async function mount(root, ctx) {
     } else if (kind === 'advert') {
       config = {interval_min: Number(f.get('interval_min')), flood: f.get('flood') !== null};
     } else if (kind === 'channel_ping') {
-      config = {channel: Number(f.get('channel')), interval_min: Number(f.get('interval_min')), text: f.get('text')};
+      config = {channel: f.get('channel') ? Number(f.get('channel')) : null, interval_min: Number(f.get('interval_min')), text: f.get('text')};
     } else if (kind === 'ping') {
       config = {targets: picked('targets'), interval_min: Number(f.get('interval_min')),
                 mode: f.get('mode'), text: f.get('text')};

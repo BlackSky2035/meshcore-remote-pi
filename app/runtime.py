@@ -14,6 +14,7 @@ from fastapi import WebSocket
 from .automation import Automation, SendBudget
 from .config import Settings
 from .node import BaseNode, create_node
+from .node.base import hop_bytes
 from .push import PushService
 from .nodeconfig import NodeConfig
 from .maintenance import Maintenance
@@ -201,7 +202,7 @@ def build(settings: Settings,
                 msg_id = await store.add_message(
                     "in", "channel", str(payload.get("channel_idx", 0)), text, name=sender,
                     sender_ts=payload.get("sender_timestamp"), path=payload.get("path"),
-                    path_hash_size=mode + 1 if isinstance(mode, int) and mode >= 0 else 1,
+                    path_hash_size=hop_bytes(mode),
                     hops=plen if isinstance(plen, int) and 0 <= plen <= 63 else None,
                     snr=payload.get("SNR"), rssi=payload.get("RSSI"))
             except Exception:

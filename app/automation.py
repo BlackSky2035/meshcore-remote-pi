@@ -25,7 +25,7 @@ import time
 from collections import deque
 from typing import Any, Awaitable, Callable
 
-from .node.base import BaseNode, NodeError
+from .node.base import BaseNode, NodeError, hop_bytes
 from .battery import battery_pct
 from .storage import AsyncStorage
 
@@ -75,25 +75,34 @@ class SendBudget:
         self._sleep = sleep
         self._sent: deque[float] = deque()
         self._lock = asyncio.Lock()
+        self.halted: Callable[[], bool] | None = None   # z. B. Pause: wird auch NACH der Wartezeit geprüft (Pause greift sofort)
+        self.why = ""                                     # Grund der letzten Ablehnung (für das Protokoll)
 
     def _trim(self, now: float) -> None:
         while self._sent and now - self._sent[0] > 3600:
             self._sent.popleft()
 
     async def acquire(self, n: int = 1) -> bool:
-        """True = darf senden (Zeitpunkt wird verbucht), False = Stundenlimit erreicht.
+        """True = darf senden (Zeitpunkt wird verbucht), False = Stundenlimit erreicht oder pausiert (Grund in `why`).
 
         `n` Plätze auf einmal, alle oder keiner: z. B. eine bestätigte Nachricht, die der Node bis zu n Mal sendet."""
         n = max(1, int(n))
         async with self._lock:
+            if self.halted and self.halted():
+                self.why = "Automatik pausiert"
+                return False
             now = self._clock()
             self._trim(now)
             if len(self._sent) + n > self.max_per_hour:
+                self.why = "Stundenlimit erreicht"
                 return False
             if self._sent:
                 wait = self.min_gap_s - (now - self._sent[-1])
                 if wait > 0:
                     await self._sleep(wait)
+                    if self.halted and self.halted():   # während des Wartens pausiert: nichts mehr senden
+                        self.why = "Automatik pausiert"
+                        return False
             t = self._clock()
             self._sent.extend([t] * n)
             return True
@@ -114,6 +123,7 @@ class Automation:
         self.store = store
         self.emit = emit
         self.budget = budget
+        budget.halted = lambda: self.paused
         self.retention_days = retention_days
         self._clock = clock
         self._wall = wall                      # Wanduhr: letzter Lauf je Regel überlebt Neustarts (monotone Uhr nicht)
@@ -335,13 +345,13 @@ class Automation:
             if not await self.budget.acquire():
                 self._release(rule, sender)
                 await self.log("warn", f"Auto-Antwort an {contact['name']} übersprungen: "
-                                       f"Stundenlimit erreicht", rule["id"])
+                                       f"{self.budget.why}", rule["id"])
                 return
             plen = payload.get("path_len")
             hops = plen if isinstance(plen, int) and 0 <= plen <= 63 else None
             if hops is None and isinstance(contact.get("path_len"), int) and contact["path_len"] >= 0:
                 hops = contact["path_len"]               # Ersatz: bekannter Weg zu diesem Kontakt
-            where = self.path_text(payload.get("path"), 1, hops)
+            where = self.path_text(payload.get("path"), hop_bytes(payload.get("path_hash_mode")), hops)
             reply = self._reply_text(cfg["reply"], contact["name"], hops, where)
             try:
                 await self.node.send_message(sender, reply)
@@ -385,10 +395,9 @@ class Automation:
                 return
             if not await self.budget.acquire():
                 self._release(rule, key)
-                await self.log("warn", f"Kanal-Antwort an {who} übersprungen: Stundenlimit erreicht", rule["id"])
+                await self.log("warn", f"Kanal-Antwort an {who} übersprungen: {self.budget.why}", rule["id"])
                 return
-            mode = payload.get("path_hash_mode")
-            where = self.path_text(payload.get("path"), mode + 1 if isinstance(mode, int) and mode >= 0 else 1, hops)
+            where = self.path_text(payload.get("path"), hop_bytes(payload.get("path_hash_mode")), hops)
             reply = self._reply_text(cfg["reply"], who, hops, where)
             try:
                 res = await self.node.send_channel_message(idx, reply)
@@ -496,7 +505,7 @@ class Automation:
         if rule["kind"] == "battery_poll":
             for key in await self._repeater_keys(cfg["targets"]):
                 if not await self.budget.acquire():
-                    await self.log("warn", "Akku-Abfrage abgebrochen: Stundenlimit erreicht", rid)
+                    await self.log("warn", f"Akku-Abfrage abgebrochen: {self.budget.why}", rid)
                     return
                 try:
                     await self.poll_node(key, low_mv=cfg["low_mv"], temperature=bool(cfg.get("temperature", False)),
@@ -506,7 +515,7 @@ class Automation:
                     await self.log("warn", f"Akku-Abfrage {key[:8]} fehlgeschlagen: {e}", rid)
         elif rule["kind"] == "advert":
             if not await self.budget.acquire():
-                await self.log("warn", "Advert abgebrochen: Stundenlimit erreicht", rid)
+                await self.log("warn", f"Advert abgebrochen: {self.budget.why}", rid)
                 return
             try:
                 await self.node.send_advert(bool(cfg.get("flood")))
@@ -515,7 +524,7 @@ class Automation:
                 await self.log("warn", f"Advert fehlgeschlagen: {e}", rid)
         elif rule["kind"] == "channel_ping":
             if not await self.budget.acquire():
-                await self.log("warn", "Kanal-Ping abgebrochen: Stundenlimit erreicht", rid)
+                await self.log("warn", f"Kanal-Ping abgebrochen: {self.budget.why}", rid)
                 return
             try:
                 await self.ping_channel(cfg["channel"], cfg["text"])
@@ -525,7 +534,7 @@ class Automation:
         elif rule["kind"] == "ping":
             for key in cfg["targets"]:
                 if not await self.budget.acquire():
-                    await self.log("warn", "Ping abgebrochen: Stundenlimit erreicht", rid)
+                    await self.log("warn", f"Ping abgebrochen: {self.budget.why}", rid)
                     return
                 try:
                     res = await self.ping_node(key, cfg["mode"], cfg["text"])

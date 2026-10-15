@@ -42,7 +42,7 @@ debug = false
 # SQLite-Datei (Nachrichten, Akkuverläufe, Regeln). Ordner wird angelegt.
 # db_path = "data/meshcore.db"
 # Ältere Einträge werden automatisch gelöscht (schont die SD-Karte)
-retention_days = 90
+retention_days = 90          # mindestens 7 (kleinere Werte werden auf 7 gesetzt)
 
 [map]
 # Kartenkacheln. Standard: OpenStreetMap (braucht Internet).
@@ -51,7 +51,8 @@ retention_days = 90
 
 [automation]
 # Schutz des gemeinsamen Funkmediums: gilt für ALLE automatischen Sendungen zusammen.
-# Nicht ohne Grund erhöhen.
+# Nicht ohne Grund erhöhen. Grenzen gegen Tippfehler (Werte darüber/darunter werden angepasst, mit Hinweis in der Übersicht):
+# auto_min_gap_s mindestens 5, auto_max_per_hour höchstens 60, manual_min_gap_s mindestens 1, manual_max_per_min höchstens 30.
 auto_min_gap_s = 15
 auto_max_per_hour = 30
 # Pause zwischen zwei Repeatern bei „Jetzt abfragen“ auf der Akku-Seite (Sekunden). Schont die Stromversorgung des Pi (Spannungsabfall beim Senden).
