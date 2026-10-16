@@ -188,6 +188,11 @@ def build(settings: Settings,
                     push.notify_keyword(hit, contact["name"] if contact else "Direktnachricht", None, payload.get("text", ""))
             except Exception:
                 log.exception("Stichwort-Prüfung fehlgeschlagen")
+            if contact:
+                try:
+                    await room.mark_alive(contact["public_key"])    # sein Node ist erreichbar: fehlende Raum-Beiträge nachliefern
+                except Exception:
+                    log.exception("Raum: Erreichbarkeit nicht gemerkt")
             try:
                 await room.handle_incoming(payload, contact)
             except Exception:
@@ -236,6 +241,10 @@ def build(settings: Settings,
                 log.exception("Push konnte nicht vorgemerkt werden")
         elif kind in ("new_contact", "advertisement", "path_update"):
             automation.invalidate_contacts()
+            try:                                   # Advert/neuer Pfad: dieser Node ist gerade erreichbar (Raum liefert Fehlendes nach)
+                await room.mark_alive(str(payload.get("public_key") or payload.get("pubkey_prefix") or ""))
+            except Exception:
+                log.exception("Raum: Erreichbarkeit nicht gemerkt")
 
     async def usb_notify(kind: str, text: str) -> None:
         await automation.log("warn" if kind == "down" else "info", text)

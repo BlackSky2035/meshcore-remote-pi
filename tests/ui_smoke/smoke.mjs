@@ -314,7 +314,13 @@ const status = await (await fetch('/api/status')).json();
       'Verlauf nicht geladen: Hinweis mit „Erneut laden“');
     fetchHook = null;
     click(root.querySelector('#msgRetry')); await sleep(400);
-    check(!root.querySelector('#msgRetry') && root.querySelector('#chat .bubble'), '„Erneut laden“ zeigt den Verlauf'); }
+    check(!root.querySelector('#msgRetry') && root.querySelector('#chat .bubble'), '„Erneut laden“ zeigt den Verlauf');
+    // Gelesen-Markierung hängt (tote Verbindung): der Verlauf erscheint trotzdem, statt ewig „lade …“
+    click(root.querySelector('#chatBack')); await sleep(300);
+    fetchHook = u => u.startsWith(`/api/channels/${uiIdx}/read`) ? new Promise(() => {}) : null;
+    [...items()].find(i => i.textContent.includes('UI-Test')).click(); await sleep(3600);
+    check(!!root.querySelector('#chat .bubble') && !root.querySelector('#chat').textContent.includes('lade …'), 'Hängende Gelesen-Markierung: Verlauf erscheint trotzdem');
+    fetchHook = null; }
   // mit Mitziehen (touchmove): langsam und zu kurz -> springt zurück; weit genug -> gleitet weg und schließt
   const drag = async (dx, dt) => { touch('touchstart', 100, 300); touch('touchmove', 100 + dx / 2, 302); touch('touchmove', 100 + dx, 304);
     await sleep(dt); touch('touchend', 100 + dx, 304); await sleep(350); };
@@ -768,6 +774,7 @@ const status = await (await fetch('/api/status')).json();
   check(root.querySelector('#posts').textContent.includes('Hallo Raum-Test'), 'Raum: Beitrag erscheint');
   check(root.querySelector('#msg').className.indexOf('err') < 0, 'Raum: ohne Fehler');
   check(root.querySelector('#ptext').value === '', 'Raum: Textfeld nach dem Senden leer');
+  check(['/p', '/neu', '/verlauf', '/anmelden', '/abmelden', '/hilfe'].every(c => root.textContent.includes(c)), 'Raum: Erklärtext nennt alle Befehle (auch /abmelden)');
   un();
 
   root = fresh();

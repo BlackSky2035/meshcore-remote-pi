@@ -182,7 +182,7 @@ def make_router(rt: Runtime) -> APIRouter:
     async def room_state(limit: int = 100) -> dict:
         room = _room()
         return {"config": await room.config(), "posts": await store.room_posts(0, limit, newest=True),
-                "members": await store.room_members(), "max_subscribers": R.MAX_SUBSCRIBERS, "post_max": R.POST_MAX}
+                "members": [{**m, "offline": room.is_offline(m["public_key"])} for m in await store.room_members()], "max_subscribers": R.MAX_SUBSCRIBERS, "post_max": R.POST_MAX}
 
     @r.put("/room/config")
     async def room_config(body: RoomConfig) -> dict:

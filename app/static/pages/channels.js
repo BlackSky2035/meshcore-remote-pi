@@ -1,4 +1,4 @@
-import {get, getQuick, post, put, del} from '../lib/api.js';
+import {api, get, getQuick, post, put, del} from '../lib/api.js';
 import {esc, ago, fmtTime, mentions, mentionTag, countLabel} from '../lib/util.js';
 import {pushState, enablePush, disablePush, savePrefs, testPush} from '../lib/push.js';
 
@@ -319,10 +319,13 @@ export async function mount(root, ctx) {
 
   // Als gelesen markieren (Server merkt es sich: Glocke und „einmal“-Push werden damit zurückgesetzt).
   // Antwort: bis zu welcher Nachrichten-ID vorher gelesen war (`read_upto`), null bei Fehler.
+  // Mit Zeitlimit: hing diese Anfrage (tote Verbindung nach Netzwechsel/Hintergrund), blieb früher „lade …“ für immer stehen.
   function markRead(idx) {
-    return post(`/api/channels/${idx}/read`).then(r => { ctx.refreshUnread?.(); return Number.isFinite(r?.read_upto) ? r.read_upto : null; })
+    return api(`/api/channels/${idx}/read`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}, 8000)
+      .then(r => { ctx.refreshUnread?.(); return Number.isFinite(r?.read_upto) ? r.read_upto : null; })
       .catch(() => null);
   }
+  const READ_WAIT_MS = 3000;     // so lange wartet der Verlauf höchstens auf die Gelesen-Markierung, danach Ersatz (Zähler der Liste)
 
   async function openChat(idx) {
     const c = channels.find(x => x.idx === idx);
@@ -351,7 +354,8 @@ export async function mount(root, ctx) {
     c.unread = 0;                             // Glocke sofort weg; sonst nutzte ein schnelles Wiederöffnen den alten Zähler
     renderList();
     unreadMark = null;
-    const upto = await readP;
+    // Der Verlauf wartet nie unbegrenzt auf die Gelesen-Markierung (hing die, stand früher ewig „lade …“ da).
+    const upto = await Promise.race([readP, new Promise(r => setTimeout(() => r(null), READ_WAIT_MS))]);
     if (!alive || current !== idx) return;
     unreadMark = upto != null ? {upto} : {count: unreadAtOpen};
     try { await reloadMessages(false, msgsP); if (alive && current === idx) $('error').textContent = ''; }

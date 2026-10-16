@@ -1,13 +1,15 @@
 """Raum-Bot: ein Software-„Room“ ohne Extra-Firmware, nur durch die Festplatte begrenzt (statt 32 Beiträge wie die Room-Firmware).
 
 So funktioniert es: Bekannte Kontakte (Clients) schreiben dem eigenen Node Direktnachrichten mit Befehlen:
-  /p <Text>   Beitrag schreiben        /neu       neue Beiträge holen (höchstens 3 je Antwort)
+  /p <Text>   Beitrag schreiben        /neu       neue Beiträge holen (älteste zuerst, höchstens 3, danach „noch N neue“)
   /verlauf [n] die letzten n (1–5)     /anmelden  neue Beiträge automatisch zugestellt bekommen    /abmelden   /hilfe
 Alle Beiträge liegen unbegrenzt in der Datenbank (max_posts, Standard 5000) und sind auf der Webseite lesbar.
 Grenzen (bewusst): Jede Antwort ist eine Funknachricht und zählt zum Sendebudget der Automatik (Stundenlimit, Mindestabstand); je Beitrag höchstens
-100 Zeichen; unbekannte Absender werden ignoriert; je Mitglied höchstens 20 Beiträge pro Stunde und 20 s Pause zwischen zwei Befehlen (jeder Befehl,
-nicht nur /p; Befehle in der Pause werden still ignoriert). Bei pausierter Automatik schweigt auch der Raum. Antworten tragen das Präfix „[auto] “,
+100 Zeichen; unbekannte Absender werden ignoriert; je Mitglied höchstens 20 Beiträge pro Stunde und 5 s Abstand zwischen zwei Befehlen, auch Beiträgen (ein
+früherer Befehl wird gemerkt, nur der letzte, und danach ausgeführt). Bei pausierter Automatik schweigt auch der Raum. Antworten tragen das Präfix „[auto] “,
 damit sich zwei solche Bots (z. B. auf beiden Pis) nie gegenseitig antworten. In der MeshCore-App erscheint der Node als normaler Kontakt, nicht als Room.
+Zustellung wie ein Postfach: Ein Beitrag gilt erst mit Empfangsbestätigung als gesehen und wird nie übersprungen. Wer 3 Durchläufe lang nicht bestätigt, gilt als
+offline (kein Funk mehr), bis sich sein Node meldet (Nachricht, Advert, neuer Pfad); dann werden höchstens die letzten 32 Beiträge nachgeliefert.
 An echter Hardware nicht getestet.
 """
 from __future__ import annotations
@@ -29,11 +31,13 @@ POST_MAX = 100     # ein Beitrag plus „[auto] Raum [12 14:32] @[Name] “ muss
 MAX_SUBSCRIBERS = 10
 PER_REQUEST = 3
 HISTORY_MAX = 5
-COOLDOWN_S = 20.0
+COOLDOWN_S = 5.0            # Pause zwischen zwei Beiträgen (/p) je Mitglied (gleich dem Befehlsabstand: ein zu früher /p wird gemerkt und danach gespeichert)
+CMD_GAP_S = 5.0             # Mindestabstand zwischen zwei Befehlen je Mitglied; ein früherer Befehl wird gemerkt (nur der letzte) und danach ausgeführt
 POSTS_PER_HOUR = 20
 DELIVER_EVERY_S = 20.0
 DELIVER_PER_CYCLE = 3
-MAX_TRIES = 3                # erfolglose Zustellversuche (je Durchlauf) je Beitrag und Empfänger
+MAX_TRIES = 3                # so viele unbestätigte Durchläufe hintereinander, dann gilt das Mitglied als offline (Zustellung ruht bis zur nächsten Meldung)
+BACKLOG_MAX = 32             # höchstens so viele ungesehene Beiträge je Mitglied werden nachgeliefert (wie die Room-Firmware); Älteres zeigt /verlauf
 CONFIRM_TX_MAX = 3           # send_message(confirm=True) sendet bis zu 3 Mal (RealNode: send_msg_with_retry, max_attempts=3): so viele Plätze im Sendebudget
 BACKOFF_MIN_S = 60.0         # nach einer unbestätigten Zustellung: Wartezeit für dieses Mitglied, verdoppelt sich bis BACKOFF_MAX_S, bei Erfolg zurück
 BACKOFF_MAX_S = 1800.0
@@ -76,11 +80,15 @@ class Room:
         self.node, self.store, self.budget, self._log, self.emit, self._clock = node, store, budget, log_line, emit, clock
         self._paused = paused or (lambda: False)        # globaler Pausenschalter der Automatik: dann sendet auch der Raum nichts
         self._last_post: dict[str, float] = {}
-        self._last_cmd: dict[str, float] = {}           # je Mitglied: letzter beantworteter Befehl (Pause COOLDOWN_S für ALLE Befehle)
+        self._last_cmd: dict[str, float] = {}           # je Mitglied: letzter ausgeführter Befehl (Abstand CMD_GAP_S für ALLE Befehle)
+        self._pending: dict[str, tuple[dict, dict]] = {}    # je Mitglied: zu früh gekommener Befehl (nur der letzte), wird nach CMD_GAP_S ausgeführt
+        self._timers: dict[str, asyncio.Task] = {}
+        self._sleep = asyncio.sleep                       # in Tests ersetzbar
         self._backoff_s: dict[str, float] = {}          # je Mitglied: aktuelle Wartezeit nach unbestätigter Zustellung
         self._backoff_until: dict[str, float] = {}
         self._hourly: dict[str, deque] = defaultdict(deque)
-        self._tries: dict[tuple[str, int], int] = {}
+        self._fails: dict[str, int] = {}               # je Mitglied: unbestätigte Durchläufe hintereinander
+        self._offline: set[str] = set()                 # Mitglieder, die als offline gelten: keine automatische Zustellung bis zur nächsten Meldung
         self._locks: dict[str, asyncio.Lock] = {}   # je Mitglied: /neu, /verlauf und automatische Zustellung nie gleichzeitig
         self._room_sent: deque = deque()                # (Zeit, Plätze) der eigenen Sendungen in der letzten Stunde
         self._last_help: dict[str, float] = {}          # je Mitglied: letzte Hilfe-Antwort auf einen unbekannten Befehl
@@ -147,6 +155,42 @@ class Room:
     def _note_acked(self, key: str) -> None:
         self._backoff_s.pop(key, None)
         self._backoff_until.pop(key, None)
+        self._fails.pop(key, None)
+        self._offline.discard(key)
+
+    def is_offline(self, key: str) -> bool:
+        return key in self._offline
+
+    async def mark_alive(self, key_or_prefix: str) -> None:
+        """Der Node eines Mitglieds hat sich gemeldet (Direktnachricht, Advert, neuer Pfad): wieder erreichbar, Wartezeit weg, die automatische
+        Zustellung liefert Fehlendes nach (wie das Anmelden an einem Room-Server). Wirft nie."""
+        k = (key_or_prefix or "").lower()
+        if len(k) < 6:
+            return
+        try:
+            members = await self.store.room_members()
+        except Exception:
+            return
+        for m in members:
+            key = m["public_key"]
+            if not key.lower().startswith(k):
+                continue
+            was = key in self._offline
+            self._offline.discard(key)
+            self._fails.pop(key, None)
+            self._backoff_s.pop(key, None)
+            self._backoff_until.pop(key, None)
+            if was:
+                await self._log("info", f"Raum: {m['name']} wieder erreichbar, fehlende Beiträge werden nachgeliefert")
+                await self._members_changed()
+
+    async def _trim_backlog(self, m: dict) -> None:
+        """Mehr als BACKLOG_MAX ungesehene Beiträge: nur die neuesten BACKLOG_MAX nachliefern (wie die Room-Firmware), Älteres zählt als gesehen."""
+        newest = await self.store.room_posts(m["last_seen_id"], BACKLOG_MAX + 1, newest=True)
+        if len(newest) > BACKLOG_MAX:
+            await self.store.room_update_member(m["public_key"], last_seen_id=newest[0]["id"])
+            m["last_seen_id"] = max(m["last_seen_id"], newest[0]["id"])
+            await self._log("info", f"Raum: für {m['name']} nur die letzten {BACKLOG_MAX} Beiträge nachgeliefert, Älteres mit /verlauf")
 
     @staticmethod
     def render(post: dict, title: str, now: float | None = None) -> str:
@@ -172,7 +216,7 @@ class Room:
         return cut_to_bytes(AUTO_PREFIX + line)[len(AUTO_PREFIX):]
 
     # ---- Eingehende Befehle ---------------------------------------------------------
-    async def handle_incoming(self, payload: dict, contact: dict | None) -> None:
+    async def handle_incoming(self, payload: dict, contact: dict | None, _from_timer: bool = False) -> None:
         """Nur Direktnachrichten, die mit „/“ beginnen, von bekannten Clients. Wirft nie nach außen (der Aufrufer fängt zusätzlich ab)."""
         if payload.get("txt_type", 0) != 0 or contact is None or contact.get("type_name") != "client" or not self.node.connected:
             return
@@ -186,12 +230,63 @@ class Room:
             return
         key, name = contact["public_key"], contact["name"]
         now = self._clock()
-        if now - self._last_cmd.get(key, float("-inf")) < COOLDOWN_S:
-            log.info("Raum: Befehl von %s ignoriert (Pause zwischen Befehlen)", name)
-            return                                           # still: auch ein Hinweis wäre eine Funknachricht
+        wait = self._last_cmd.get(key, float("-inf")) + CMD_GAP_S - now
+        if wait > 0 or (key in self._timers and not _from_timer):
+            # Zu früh: merken statt verwerfen (nur den letzten, ältere gemerkte fallen weg) und nach Ablauf des Abstands ausführen.
+            # So kann niemand etwas aufstauen: höchstens ein Befehl je CMD_GAP_S und Mitglied, eine Funknachricht als Hinweis gibt es nicht.
+            self._pending[key] = (payload, contact)
+            if key not in self._timers:
+                self._timers[key] = asyncio.create_task(self._run_pending(key, max(wait, 0.0)))
+            log.info("Raum: Befehl von %s gemerkt, wird in %.0f s ausgeführt", name, wait)
+            return
         self._last_cmd[key] = now
         cmd, _, arg = text[1:].partition(" ")
         cmd, arg = cmd.lower(), arg.strip()
+        try:
+            await self._handle_cmd(key, name, cmd, arg, cfg, now)
+        finally:
+            await self._members_changed()
+
+    async def _run_pending(self, key: str, wait: float) -> None:
+        """Gemerkte Befehle dieses Mitglieds nacheinander ausführen, jeweils nach dem Mindestabstand. Ein Zeitgeber je Mitglied;
+        er trägt sich erst am Ende aus, damit Befehle, die währenddessen kommen, nur gemerkt (und von ihm erledigt) werden. Wirft nie."""
+        try:
+            while True:
+                await self._sleep(max(0.0, wait))
+                item = self._pending.pop(key, None)
+                if item is None:
+                    return
+                wait = self._last_cmd.get(key, float("-inf")) + CMD_GAP_S - self._clock()
+                if wait > 0:                                  # inzwischen lief ein anderer Befehl: weiter warten
+                    self._pending.setdefault(key, item)
+                    continue
+                try:
+                    await self.handle_incoming(*item, _from_timer=True)
+                except Exception:
+                    log.exception("Raum: gemerkter Befehl fehlgeschlagen")
+                wait = self._last_cmd.get(key, float("-inf")) + CMD_GAP_S - self._clock()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Raum: Zeitgeber für gemerkte Befehle fehlgeschlagen")
+        finally:
+            if self._timers.get(key) is asyncio.current_task():
+                self._timers.pop(key, None)
+
+    async def drain_pending(self) -> None:
+        """Nur für Tests: auf gemerkte Befehle warten."""
+        while self._timers:
+            await asyncio.gather(*list(self._timers.values()), return_exceptions=True)
+            await asyncio.sleep(0)
+
+    async def _members_changed(self) -> None:
+        """Webseite: Mitgliederliste neu laden (angemeldet/abgemeldet/offline). Wirft nie."""
+        try:
+            await self.emit({"type": "room_members", "payload": {}})
+        except Exception:
+            log.exception("Raum: Meldung an die Webseite fehlgeschlagen")
+
+    async def _handle_cmd(self, key: str, name: str, cmd: str, arg: str, cfg: dict, now: float) -> None:
         member = await self.store.room_member(key, name)
         if cmd in ("hilfe", "help", "?"):
             await self._say(key, name, f"{cfg['title']}: {HELP}")
@@ -200,20 +295,30 @@ class Room:
         elif cmd in ("neu", "new"):
             async with self._lock(key):                      # sonst holt die automatische Zustellung denselben Beitrag parallel (doppelt)
                 member = await self.store.room_member(key, name)
-                posts = await self.store.room_posts(member["last_seen_id"], PER_REQUEST + 1)
-                more = len(posts) > PER_REQUEST
-                posts = posts[:PER_REQUEST]
-                if not posts:
+                await self._trim_backlog(member)
+                posts = await self.store.room_posts(member["last_seen_id"], BACKLOG_MAX + 1)
+                foreign = [p for p in posts if p["author_key"] != key]       # eigene Beiträge werden nie zurückgeschickt
+                if not foreign:
+                    if posts:
+                        await self.store.room_update_member(key, last_seen_id=posts[-1]["id"])
                     await self._say(key, name, f"{cfg['title']}: keine neuen Beiträge")
                     return
-                for p in posts:
+                sent = 0
+                for p in posts:                                  # immer der älteste zuerst
+                    if sent >= PER_REQUEST:
+                        break
+                    if p["author_key"] == key:
+                        await self.store.room_update_member(key, last_seen_id=p["id"])
+                        continue
                     if await self._say(key, name, self.render(p, cfg['title']), confirm=True) != "ok":
-                        break                                # nicht bestätigt: bleibt ungelesen, /neu holt es erneut
+                        return                               # nicht bestätigt: bleibt ungelesen, /neu holt es erneut
                     self._note_acked(key)
                     await self.store.room_update_member(key, last_seen_id=p["id"])
-                else:
-                    if more:
-                        await self._say(key, name, f"{cfg['title']}: es gibt weitere, /neu")
+                    sent += 1
+                left = len(foreign) - sent
+                if left > 0:                                 # Rest immer mit Zahl: man weiß, wie viel noch fehlt
+                    word = "neuer Beitrag" if left == 1 else "neue Beiträge"
+                    await self._say(key, name, f"{cfg['title']}: noch {left} {word} (/neu)")
         elif cmd in ("verlauf", "history"):
             n = int(arg) if arg.isdigit() else 3
             async with self._lock(key):
@@ -230,9 +335,17 @@ class Room:
             if len(subs) >= MAX_SUBSCRIBERS:
                 await self._say(key, name, f"{cfg['title']}: Anmeldeliste voll, bitte /neu benutzen")
             else:
-                # ab jetzt nur noch Neues: alles bis hierher gilt als gesehen
-                await self.store.room_update_member(key, last_seen_id=await self.store.room_max_id(), subscribed=True)
-                await self._say(key, name, f"{cfg['title']}: angemeldet, neue Beiträge kommen automatisch (/abmelden)")
+                # Wer schon mitliest (Markierung > 0), behält seine ungelesenen Beiträge: die automatische Zustellung liefert sie nach.
+                # Ganz neue Mitglieder starten beim neuesten Beitrag (sonst kämen bis zu BACKLOG_MAX alte Beiträge auf einmal per Funk).
+                fresh = member["last_seen_id"] == 0
+                if fresh:
+                    await self.store.room_update_member(key, last_seen_id=await self.store.room_max_id(), subscribed=True)
+                else:
+                    await self.store.room_update_member(key, subscribed=True)
+                pending = 0 if fresh else len([p for p in await self.store.room_posts(member["last_seen_id"], BACKLOG_MAX)
+                                               if p["author_key"] != key])
+                extra = f", {pending} ungelesene folgen" if pending else ""
+                await self._say(key, name, f"{cfg['title']}: angemeldet, neue Beiträge kommen automatisch{extra} (/abmelden)")
         elif cmd == "abmelden":
             await self.store.room_update_member(key, subscribed=False)
             await self._say(key, name, f"{cfg['title']}: abgemeldet")
@@ -247,7 +360,7 @@ class Room:
         try:
             text = clean_text(text)
             if now - self._last_post.get(key, -1e9) < COOLDOWN_S:
-                raise RoomError("Bitte kurz warten (20 s Pause zwischen Beiträgen).")
+                raise RoomError(f"Bitte kurz warten ({COOLDOWN_S:.0f} s Pause zwischen Beiträgen).")
             hist = self._hourly[key]
             while hist and now - hist[0] > 3600:
                 hist.popleft()
@@ -259,7 +372,8 @@ class Room:
         self._last_post[key] = now
         self._hourly[key].append(now)
         pid = await self.store.room_add_post(key, name, text, cfg["max_posts"])
-        await self.store.room_update_member(key, last_seen_id=pid)          # eigener Beitrag zählt als gesehen
+        # Der eigene Beitrag setzt die Markierung NICHT weiter: sonst gälten ältere, noch nicht zugestellte fremde Beiträge als gesehen.
+        # Eigene Beiträge werden beim Zustellen und bei /neu übersprungen.
         await self._log("info", f"Raum: Beitrag {pid} von {name}")
         await self.emit({"type": "room_post", "payload": {"id": pid}})
         await self._say(key, name, f"{cfg['title']}: gespeichert als [{pid}]")
@@ -283,6 +397,8 @@ class Room:
         for m0 in await self.store.room_members():
             if not m0["subscribed"] or tx >= DELIVER_PER_CYCLE:
                 continue
+            if m0["public_key"] in self._offline:
+                continue                                  # gilt als offline: erst wieder nach einer Meldung des Nodes (mark_alive)
             if self._backoff_until.get(m0["public_key"], float("-inf")) > self._clock():
                 continue                                  # zuletzt nicht erreichbar: noch warten
             async with self._lock(m0["public_key"]):
@@ -300,6 +416,7 @@ class Room:
         """Nächsten ungesehenen fremden Beitrag an ein Mitglied senden (Sperre des Mitglieds wird vom Aufrufer gehalten).
         -> (Status "ok" | "unacked" | "error", zugestellt, gesendet)"""
         key = m["public_key"]
+        await self._trim_backlog(m)
         for p in await self.store.room_posts(m["last_seen_id"], 5):
             if p["author_key"] == key:
                 await self.store.room_update_member(key, last_seen_id=p["id"])
@@ -308,19 +425,16 @@ class Room:
             if status == "error":
                 return "error", 0, 0                      # Budget/Pause/Node-Fehler zählen nicht als Fehlversuch
             if status == "unacked":
-                # Keine Bestätigung: der Beitrag bleibt ungesehen und kommt nach der Wartezeit erneut. Nach MAX_TRIES erfolglosen Durchläufen
-                # wird er übersprungen, damit ein dauerhaft unerreichbarer Empfänger nichts blockiert.
+                # Keine Bestätigung: der Beitrag bleibt ungesehen (wird NIE übersprungen) und kommt nach der Wartezeit erneut. Nach MAX_TRIES
+                # erfolglosen Durchläufen gilt das Mitglied als offline: keine Funkversuche mehr, bis sich sein Node meldet (mark_alive) oder /neu kommt.
                 self._note_unacked(key)
-                k = (key, p["id"])
-                self._tries[k] = self._tries.get(k, 0) + 1
-                if self._tries[k] < MAX_TRIES:
-                    return "unacked", 0, 1
-                await self._log("warn", f"Raum: Beitrag {p['id']} an {m['name']} nach {MAX_TRIES} Versuchen übersprungen")
-                self._tries.pop(k, None)
-                await self.store.room_update_member(key, last_seen_id=p["id"])
-                return "unacked", 1, 1
+                self._fails[key] = self._fails.get(key, 0) + 1
+                if self._fails[key] >= MAX_TRIES:
+                    self._offline.add(key)
+                    await self._log("info", f"Raum: {m['name']} gilt als offline (keine Empfangsbestätigung), Zustellung ruht bis zur nächsten Meldung")
+                    await self._members_changed()
+                return "unacked", 0, 1
             self._note_acked(key)
-            self._tries.pop((key, p["id"]), None)
             await self.store.room_update_member(key, last_seen_id=p["id"])
             return "ok", 1, 1
         return "ok", 0, 0

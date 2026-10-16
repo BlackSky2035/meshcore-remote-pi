@@ -7,7 +7,7 @@ export async function mount(root, ctx) {
     <section class="card">
       <h2 style="margin-top:0">Raum</h2>
       <p class="muted small">Ein Software-Raum ohne Extra-Firmware: Bekannte Kontakte schicken deinem Node Direktnachrichten wie <b>/p Text</b> (schreiben),
-        <b>/neu</b>, <b>/verlauf 3</b>, <b>/anmelden</b> (neue Beiträge automatisch) und <b>/hilfe</b>. Alle Beiträge bleiben hier gespeichert (nicht nur 32).
+        <b>/neu</b> (älteste zuerst, je 3, danach „noch N neue“), <b>/verlauf 3</b>, <b>/anmelden</b> (neue Beiträge automatisch), <b>/abmelden</b> (automatische Zustellung beenden) und <b>/hilfe</b>. Alle Beiträge bleiben hier gespeichert (nicht nur 32).
         Jede Antwort ist eine Funknachricht und zählt zum Sendebudget. In der MeshCore-App erscheint der Node als normaler Kontakt, nicht als Raum.</p>
       <p id="msg" class="small"></p>
       <div class="row" style="gap:12px;flex-wrap:wrap;align-items:end">
@@ -38,7 +38,7 @@ export async function mount(root, ctx) {
     $('ptext').placeholder = `Beitrag von der Webseite (höchstens ${d.post_max} Zeichen)`;
     $('posts').innerHTML = d.posts.length ? [...d.posts].reverse().map(p => `<div class="setrow"><div class="muted">[${p.id}] ${esc(fmtDateTime(p.ts))} · ${esc(p.author)}
       <button class="small secondary" data-del="${p.id}">löschen</button></div><div>${esc(p.text)}</div></div>`).join('') : '<span class="muted">Noch keine Beiträge.</span>';
-    $('members').innerHTML = d.members.length ? d.members.map(m => `<div class="setrow"><div>${esc(m.name)} ${m.subscribed ? '<span class="muted">· angemeldet (bekommt neue Beiträge)</span>' : ''}
+    $('members').innerHTML = d.members.length ? d.members.map(m => `<div class="setrow"><div>${esc(m.name)} ${m.subscribed ? '<span class="muted">· angemeldet (bekommt neue Beiträge)</span>' : ''}${m.offline ? ' <span class="muted">· offline (Zustellung ruht, bis sich sein Node meldet)</span>' : ''}
       <button class="small secondary" data-mem="${esc(m.public_key)}">entfernen</button></div></div>`).join('') : '<span class="muted">Noch niemand hat den Raum benutzt.</span>'
       + `<p class="muted small">Höchstens ${d.max_subscribers} Angemeldete. Entfernte Mitglieder werden beim nächsten Befehl neu angelegt (nur neue Beiträge zählen dann als ungelesen).</p>`;
   }
@@ -64,7 +64,8 @@ export async function mount(root, ctx) {
     if (b.dataset.del && confirm('Beitrag löschen?')) { await del(`/api/room/posts/${b.dataset.del}`); await load(); }
     if (b.dataset.mem && confirm('Mitglied entfernen?')) { await del(`/api/room/members/${b.dataset.mem}`); await load(); }
   });
-  const off = ctx.on('room_post', () => load().catch(() => {}));
+  // neu laden bei neuem Beitrag, geänderter Mitgliederliste (/anmelden, /abmelden, offline) und nach Rückkehr aus dem Hintergrund
+  const offs = ['room_post', 'room_members', '_resume'].map(t => ctx.on(t, () => load().catch(() => {})));
   await load().catch(e => msg(e.message, 'err'));
-  return () => { alive = false; if (typeof off === 'function') off(); };
+  return () => { alive = false; offs.forEach(off => { if (typeof off === 'function') off(); }); };
 }

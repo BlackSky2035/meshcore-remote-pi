@@ -11,6 +11,10 @@ async def room(rt):
     clock = FakeClock()
     rt.room._clock = clock
     rt.room.tick = lambda s=30: clock.advance(s)
+
+    async def fake_sleep(sec):                                       # Wartezeit gemerkter Befehle: nur die Testuhr vorstellen
+        clock.advance(sec)
+    rt.room._sleep = fake_sleep
     await rt.room.set_config(True, "Raum", 5000)
     return rt.room
 
@@ -61,8 +65,9 @@ async def test_post_validation_cooldown_and_hourly_limit(rt, room):
     room.tick(R.COOLDOWN_S)
     await say(rt, ALICE, "/p eins")
     n = len(texts(rt, ALICE))
-    await say(rt, ALICE, "/p zwei")
-    assert len(texts(rt, ALICE)) == n and len(await rt.store.room_posts()) == 1    # in der Pause: still ignoriert (keine Funkantwort)
+    await say(rt, ALICE, "/p zwei")                                    # zu früh: gemerkt, nach 5 s gespeichert (nicht mehr verworfen)
+    await room.drain_pending()
+    assert len(await rt.store.room_posts()) == 2 and "gespeichert" in texts(rt, ALICE)[-1]
     for i in range(R.POSTS_PER_HOUR):
         room.tick(25)
         await say(rt, ALICE, f"/p nr {i}")
@@ -75,7 +80,7 @@ async def test_max_three_per_request_and_hint(rt, room):
         await rt.store.room_add_post("web", "Web", f"b{i}")
     await say(rt, BOB, "/neu")
     out = texts(rt, BOB)
-    assert len(out) == 4 and "weitere" in out[-1] and "b0" in out[0] and "b2" in out[2]
+    assert len(out) == 4 and "noch 2 neue Beiträge (/neu)" in out[-1] and "b0" in out[0] and "b2" in out[2]
     room.tick(R.COOLDOWN_S)
     await say(rt, BOB, "/neu")
     assert "b3" in texts(rt, BOB)[4]
@@ -326,14 +331,21 @@ async def test_unacked_delivery_stays_unseen_and_is_retried(rt, room):
     assert member["last_seen_id"] == 1
 
 
-async def test_permanently_unreachable_member_does_not_block_forever(rt, room):
+async def test_unreachable_member_goes_offline_and_never_loses_a_post(rt, room):
+    """Früher wurden Beiträge nach 3 unbestätigten Durchläufen übersprungen, /neu meldete danach „keine neuen Beiträge“.
+    Jetzt: nichts wird übersprungen; das Mitglied gilt als offline und bekommt keine Funkversuche mehr, bis sich sein Node meldet."""
     await _subscribed_bob_with_web_post(rt, room)
     rt.node.no_ack = True
     for _ in range(R.MAX_TRIES):
         await room.deliver_once()
-        room.tick(R.BACKOFF_MAX_S)                                   # Wartezeit nach jedem Fehlschlag
-    member = [m for m in await rt.store.room_members() if m["public_key"] == BOB][0]
-    assert member["last_seen_id"] == 1                               # nach MAX_TRIES übersprungen
+        room.tick(R.BACKOFF_MAX_S)
+    assert member_of(await rt.store.room_members(), BOB)["last_seen_id"] == 0      # NICHT übersprungen
+    assert room.is_offline(BOB)
+    sent = len(rt.node.sent)
+    for _ in range(5):                                                # offline: kein Funk mehr, auch nach langer Zeit
+        room.tick(R.BACKOFF_MAX_S)
+        await room.deliver_once()
+    assert len(rt.node.sent) == sent == R.MAX_TRIES
 
 
 async def test_neu_does_not_mark_unacked_posts_as_seen(rt, room):
@@ -431,14 +443,104 @@ async def test_unacked_member_does_not_stop_delivery_to_others(rt, room):
     assert member_of(await rt.store.room_members(), BOB)["last_seen_id"] == 0
 
 
-async def test_permanently_unreachable_member_still_skips_after_max_tries(rt, room):
+async def _bob_offline(rt, room):
     await _subscribed_bob_with_web_post(rt, room)
     rt.node.no_ack = True
     for _ in range(R.MAX_TRIES):
         await room.deliver_once()
         room.tick(R.BACKOFF_MAX_S)
+    assert room.is_offline(BOB)
+    rt.node.no_ack = False
+    rt.node.sent.clear()
+
+
+async def test_advert_from_offline_member_resumes_delivery(rt, room):
+    await _bob_offline(rt, room)
+    await rt.node.emit({"type": "advertisement", "payload": {"public_key": BOB}})
+    await rt.hub.drain()
+    assert not room.is_offline(BOB)
+    assert await room.deliver_once() == 1                             # sofort, ohne Restwartezeit
+    assert any("Hallo Bob" in t for t in texts(rt, BOB))
     assert member_of(await rt.store.room_members(), BOB)["last_seen_id"] == 1
-    assert len(rt.node.sent) == R.MAX_TRIES
+
+
+async def test_path_update_with_prefix_also_counts_as_alive(rt, room):
+    await _bob_offline(rt, room)
+    await rt.node.emit({"type": "path_update", "payload": {"public_key": BOB[:12]}})
+    await rt.hub.drain()
+    assert not room.is_offline(BOB)
+
+
+async def test_any_direct_message_from_offline_member_resumes_delivery(rt, room):
+    await _bob_offline(rt, room)
+    await say(rt, BOB, "bin wieder da")                               # kein Befehl, trotzdem ein Lebenszeichen
+    assert not room.is_offline(BOB)
+    assert await room.deliver_once() == 1
+
+
+async def test_neu_after_offline_brings_the_missed_posts(rt, room):
+    await _bob_offline(rt, room)
+    room.tick(R.COOLDOWN_S)
+    await say(rt, BOB, "/neu")
+    assert any("Hallo Bob" in t for t in texts(rt, BOB))
+    assert not any("keine neuen" in t for t in texts(rt, BOB))
+
+
+async def test_short_or_unknown_key_in_event_is_ignored(rt, room):
+    await _bob_offline(rt, room)
+    await room.mark_alive("")
+    await room.mark_alive("ab")
+    await rt.node.emit({"type": "advertisement", "payload": {}})
+    await rt.hub.drain()
+    assert room.is_offline(BOB)
+
+
+async def test_mark_alive_never_raises_when_the_database_fails(rt, room):
+    await _bob_offline(rt, room)
+    async def boom():
+        raise RuntimeError("Datenbank weg")
+    rt.store.room_members = boom
+    await room.mark_alive(BOB)                                        # wirft nicht
+
+
+async def test_backlog_is_capped_at_32_like_the_room_firmware(rt, room):
+    await say(rt, BOB, "/anmelden")
+    room.budget.min_gap = 0
+    room.budget.max_per_hour = 100000
+    for i in range(R.BACKLOG_MAX + 8):
+        await room.post_from_web(f"B{i}")
+    rt.node.sent.clear()
+    assert await room.deliver_once() == 1
+    first = texts(rt, BOB)[0]
+    assert f"B{8}" in first and "B7 " not in first                    # die 8 ältesten zählen als gesehen, es geht mit dem 9. los
+    assert member_of(await rt.store.room_members(), BOB)["last_seen_id"] == 9
+
+
+async def test_offline_member_does_not_block_others(rt, room):
+    await say(rt, BOB, "/anmelden")
+    room.tick(30)
+    await say(rt, ALICE, "/anmelden")
+    room.budget.min_gap = 0
+    orig = rt.node.send_message
+
+    async def send(key, text, confirm=False):
+        res = await orig(key, text, confirm=confirm)
+        return {**res, "acked": False} if confirm and key == BOB else res
+    rt.node.send_message = send
+    for i in range(R.MAX_TRIES):
+        await room.post_from_web(f"P{i}")
+        await room.deliver_once()
+        room.tick(R.BACKOFF_MAX_S)
+    assert room.is_offline(BOB) and not room.is_offline(ALICE)
+    assert member_of(await rt.store.room_members(), ALICE)["last_seen_id"] == R.MAX_TRIES
+
+
+async def test_api_shows_offline_members(client, rt):
+    rt.room._offline.add(BOB)
+    await rt.store.room_member(BOB, "Bob")
+    r = await client.get("/api/room")
+    m = [x for x in r.json()["members"] if x["public_key"] == BOB][0]
+    assert m["offline"] is True
 
 
 async def test_room_is_silent_while_automation_is_paused(rt, room):
@@ -455,17 +557,51 @@ async def test_room_is_silent_while_automation_is_paused(rt, room):
     assert await room.deliver_once() == 1
 
 
-async def test_every_command_has_a_cooldown_per_member(rt, room):
-    for _ in range(5):
-        await say(rt, BOB, "/hilfe")
-        await say(rt, BOB, "/verlauf")
-        await say(rt, BOB, "/neu")
-    assert len(texts(rt, BOB)) == 1                                    # nur der erste Befehl bekommt eine Antwort
-    await say(rt, ALICE, "/hilfe")
-    assert len(texts(rt, ALICE)) == 1                                  # Pause gilt je Mitglied
-    room.tick(R.COOLDOWN_S)
+async def test_commands_too_fast_are_remembered_and_run_later(rt, room):
+    """Kein Befehl geht verloren. Zu früh (< 5 s) wird gemerkt, nur der letzte, und nach dem Abstand ausgeführt."""
+    room._sleep = lambda s: __import__("asyncio").sleep(3600)        # Zeitgeber zunächst anhalten
     await say(rt, BOB, "/hilfe")
-    assert len(texts(rt, BOB)) == 2
+    for _ in range(5):
+        await say(rt, BOB, "/verlauf")
+    await say(rt, BOB, "/abmelden")
+    assert len(texts(rt, BOB)) == 1                                    # sofort nur der erste
+    await say(rt, ALICE, "/hilfe")
+    assert len(texts(rt, ALICE)) == 1                                  # Abstand gilt je Mitglied
+    for t in room._timers.values():
+        t.cancel()
+    room._timers.clear()
+    room.tick(R.CMD_GAP_S)
+    await room.handle_incoming(*room._pending.pop(BOB), _from_timer=True)   # was der Zeitgeber tun würde
+    out = texts(rt, BOB)
+    assert len(out) == 2 and "abgemeldet" in out[-1]                   # nur der letzte gemerkte Befehl lief
+
+
+async def test_remembered_command_runs_after_the_gap_via_timer(rt, room):
+    room.budget.min_gap = 0
+    await say(rt, BOB, "/hilfe")
+    await say(rt, BOB, "/abmelden")
+    await room.drain_pending()
+    out = texts(rt, BOB)
+    assert len(out) == 2 and "abgemeldet" in out[-1]
+
+
+async def test_spamming_commands_cannot_queue_up(rt, room):
+    room._sleep = lambda s: __import__("asyncio").sleep(3600)
+    await say(rt, BOB, "/hilfe")
+    for i in range(50):
+        await say(rt, BOB, f"/verlauf {i % 5 + 1}")
+    assert len(room._pending) == 1 and len(room._timers) == 1           # höchstens ein gemerkter Befehl und ein Zeitgeber je Mitglied
+    for t in room._timers.values():
+        t.cancel()
+
+
+async def test_failing_remembered_command_never_raises(rt, room):
+    await say(rt, BOB, "/hilfe")
+    async def boom(*a, **k):
+        raise RuntimeError("kaputt")
+    await say(rt, BOB, "/neu")
+    room.handle_incoming = boom
+    await room.drain_pending()                                          # kein Fehler nach außen
 
 
 async def test_say_returns_status_per_call_even_in_parallel(rt, room):
@@ -509,3 +645,75 @@ def test_room_member_first_contact_is_atomic():
     assert len(s.room_members()) == 1
     assert s.room_member(ALICE, "Alice2")["name"] == "Alice2"
     s.close()
+
+
+async def test_member_changes_notify_the_web_page(rt, room):
+    """Früher: Nach /abmelden zeigte die Webseite das Mitglied weiter als angemeldet (sie lud nur bei neuen Beiträgen neu)."""
+    seen = []
+    orig = room.emit
+
+    async def emit(ev):
+        seen.append(ev["type"])
+        await orig(ev)
+    room.emit = emit
+    await say(rt, BOB, "/anmelden")
+    assert "room_members" in seen
+    seen.clear()
+    room.tick(R.COOLDOWN_S)
+    await say(rt, BOB, "/abmelden")
+    assert "room_members" in seen
+    assert not member_of(await rt.store.room_members(), BOB)["subscribed"]
+
+
+async def test_failing_web_notification_never_breaks_a_command(rt, room):
+    async def boom(ev):
+        raise RuntimeError("WebSocket weg")
+    room.emit = boom
+    await say(rt, BOB, "/anmelden")
+    assert member_of(await rt.store.room_members(), BOB)["subscribed"]
+    assert any("angemeldet" in t for t in texts(rt, BOB))
+
+
+async def test_neu_tells_how_many_are_left_oldest_first(rt, room):
+    """Bei 10 neuen kommen mit /neu 3 (älteste zuerst) und danach „noch 7“."""
+    for i in range(10):
+        await rt.store.room_add_post("web", "Web", f"n{i}")
+    await say(rt, BOB, "/neu")
+    out = texts(rt, BOB)
+    assert ["n0" in out[0], "n1" in out[1], "n2" in out[2]] == [True] * 3
+    assert out[3].endswith("noch 7 neue Beiträge (/neu)")
+    for left in (4, 1):
+        room.tick(R.COOLDOWN_S)
+        rt.node.sent.clear()
+        await say(rt, BOB, "/neu")
+    assert texts(rt, BOB)[-1].endswith("noch 1 neuer Beitrag (/neu)")
+    room.tick(R.COOLDOWN_S)
+    rt.node.sent.clear()
+    await say(rt, BOB, "/neu")
+    assert len(texts(rt, BOB)) == 1 and "n9" in texts(rt, BOB)[0]     # letzter: keine Restzeile
+
+
+async def test_own_post_does_not_hide_older_unseen_posts(rt, room):
+    """Echter Fehler: ein eigener Beitrag setzte die Markierung auf sich selbst, ältere fremde, noch ungesehene galten dann als gesehen."""
+    await rt.store.room_add_post("web", "Web", "vorher")
+    await say(rt, BOB, "/p meins")
+    room.tick(R.COOLDOWN_S)
+    rt.node.sent.clear()
+    await say(rt, BOB, "/neu")
+    out = texts(rt, BOB)
+    assert any("vorher" in t for t in out) and not any("meins" in t for t in out)
+
+
+async def test_subscribing_keeps_unread_posts_of_an_existing_reader(rt, room):
+    """Wer vorher mit /neu gelesen hat und noch Beiträge offen hat, verliert sie beim /anmelden nicht mehr."""
+    for i in range(5):
+        await rt.store.room_add_post("web", "Web", f"a{i}")
+    await say(rt, BOB, "/neu")                                        # a0..a2, „noch 2“
+    room.tick(R.COOLDOWN_S)
+    rt.node.sent.clear()
+    await say(rt, BOB, "/anmelden")
+    assert "2 ungelesene folgen" in texts(rt, BOB)[-1]
+    room.budget.min_gap = 0
+    rt.node.sent.clear()
+    await room.deliver_once()
+    assert any("a3" in t for t in texts(rt, BOB))
