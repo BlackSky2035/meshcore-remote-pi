@@ -286,3 +286,24 @@ async def test_trace_ping_uses_the_nodes_path_hash_size(mode, path, flags):
     n.mc.wait_for_event = wait_for_event
     await n.ping("c3" * 32, "trace")
     assert (calls["path"], calls["flags"]) == (path, flags)
+
+
+async def test_cached_channel_list_does_not_wait_for_the_command_lock():
+    """Beobachtet: Kanalübersicht lud ewig. Die schon gelesene Liste wartete auf die Befehlssperre, also auf jede
+    laufende Node-Aktion (z. B. Raum-Zustellung mit Bestätigung). Jetzt kommt sie sofort aus dem Speicher."""
+    import asyncio
+    n = make({0: ("Public", b"\x01" * 16)})
+    first = await n.channels()
+    async with n._cmd_lock:                                  # ein langer Befehl hält die Sperre
+        chans = await asyncio.wait_for(n.channels(), 0.5)
+        top = await asyncio.wait_for(n.max_channels(), 0.5)
+    assert chans == first and top == 4
+
+
+async def test_first_channel_read_still_takes_the_command_lock():
+    import asyncio
+    n = make({0: ("Public", b"\x01" * 16)})
+    async with n._cmd_lock:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(n.channels(), 0.1)        # noch nichts gelesen: nie am laufenden Befehl vorbei
+    assert [c["name"] for c in await n.channels()] == ["Public"]

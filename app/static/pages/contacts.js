@@ -1,5 +1,5 @@
 import {get, post, del} from '../lib/api.js';
-import {esc, ago, typeLabel, TYPE_COLOR, pathLabel, fmtTime, debounce, mentions, locked, countLabel} from '../lib/util.js';
+import {esc, ago, typeLabel, TYPE_COLOR, pathLabel, chatTime, debounce, mentions, locked, countLabel} from '../lib/util.js';
 
 const FILTERS = [['all', 'Alle'], ['client', 'Clients'], ['repeater', 'Repeater'], ['room', 'Rooms'], ['sensor', 'Sensoren']];
 
@@ -156,7 +156,7 @@ export async function mount(root, ctx) {
   function bubble(m) {
     const out = m.direction === 'out';
     return `<div class="bubble ${out ? 'out' : ''} ${m.auto ? 'auto' : ''}">${mentions(m.text, ctx.state.status?.name)}
-      <div class="meta">${fmtTime(m.ts)}${m.auto ? ' · automatisch' : ''}</div></div>`;
+      <div class="meta">${chatTime(m.ts)}${m.auto ? ' · automatisch' : ''}</div></div>`;
   }
 
   let chatSeq = 0;

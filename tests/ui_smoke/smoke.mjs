@@ -375,6 +375,13 @@ const status = await (await fetch('/api/status')).json();
 
   // Erwähnung ohne Uhrzeit: gesendet wird genau der Text im Eingabefeld
   const U = await imp('lib/util.js');
+  {
+    const now = new Date(2026, 9, 21, 15, 0, 0), at = (y, mo, d, h) => new Date(y, mo, d, h, 5, 0).getTime() / 1000;
+    const today = U.chatTime(at(2026, 9, 21, 9), now), older = U.chatTime(at(2026, 9, 20, 9), now), lastYear = U.chatTime(at(2025, 9, 20, 9), now);
+    check(today === new Date(at(2026, 9, 21, 9) * 1000).toLocaleTimeString() && older.includes('20') && older.endsWith(today)
+          && older !== today && lastYear.includes('2025') && !older.includes('2026'),
+          `Chat-Zeit: heute nur Uhrzeit, ältere mit Datum, Jahr nur bei anderem Jahr (${today} | ${older} | ${lastYear})`);
+  }
   check(U.mentionTag('Alice [Sim]') === '@[Alice Sim]' && U.mentionTag('  ') === '' && U.mentionTag(null) === '', 'Erwähnung: eckige Klammern im Namen werden entfernt, leerer Name ergibt keine Erwähnung');
   check(U.withReceiptTime === undefined, 'Uhrzeit-Einfügen ist entfernt');
   root.querySelector('#chat').insertAdjacentHTML('beforeend', `<div class="bubble" data-name="Alice (Sim)">Frage</div>`);

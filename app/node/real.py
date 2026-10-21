@@ -350,9 +350,12 @@ class RealNode(BaseNode):
     CHANNELS_TOTAL_S = 45.0          # höchstens so lange je Aufruf von channels() lesen (hält die Befehlssperre!)
     CHANNELS_RETRY_S = 60.0          # stumme Plätze frühestens nach dieser Zeit erneut abfragen
 
-    @_locked
     async def max_channels(self) -> int:
-        return await self._max_channels_impl()
+        """Bekannter Wert kommt ohne Befehlssperre zurück (sonst wartete die Kanalliste auf jede laufende Funkaktion)."""
+        if self._max_channels is not None:
+            return self._max_channels
+        async with self._cmd_lock:
+            return await self._max_channels_impl()
 
     async def _max_channels_impl(self) -> int:
         """Ohne eigene Sperre: nur für Aufrufer gedacht, die `_cmd_lock` schon halten (siehe `channels()` etc.)."""
@@ -383,8 +386,17 @@ class RealNode(BaseNode):
         raise NodeError(f"Kanal {idx}: keine Antwort vom Node nach {tries} Versuchen"
                         + (f" ({jsonable(last.payload)})" if last else ""))
 
-    @_locked
     async def channels(self) -> list[dict]:
+        """Schneller Weg ohne Befehlssperre: Ist die Liste schon gelesen, kommt sie sofort aus dem Speicher.
+        Früher wartete auch dieser Fall auf die Sperre, also auf jede gerade laufende Node-Aktion (Raum-Zustellung
+        mit Bestätigung, Akku-/Temperaturabfrage, Repeater-Befehl) – die Kanalübersicht lud dann ewig."""
+        self._require()
+        if self._channels_cache is not None:
+            return list(self._channels_cache)
+        async with self._cmd_lock:
+            return await self._channels_locked()
+
+    async def _channels_locked(self) -> list[dict]:
         """Wird nur einmal pro Verbindung wirklich vom Node gelesen (`connect()` leert den
         Zwischenspeicher); danach kommen weitere Aufrufe aus dem Speicher. `set_channel`/`remove_channel`
         halten den Zwischenspeicher selbst aktuell, indem sie nur den geänderten Platz neu lesen.

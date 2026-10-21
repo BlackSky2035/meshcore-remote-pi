@@ -1,5 +1,5 @@
 import {api, get, getQuick, post, put, del} from '../lib/api.js';
-import {esc, ago, fmtTime, mentions, mentionTag, countLabel} from '../lib/util.js';
+import {esc, ago, chatTime, mentions, mentionTag, countLabel} from '../lib/util.js';
 import {pushState, enablePush, disablePush, savePrefs, testPush} from '../lib/push.js';
 
 function hue(name) {                       // gleicher Absender = gleiche Farbe
@@ -273,7 +273,7 @@ export async function mount(root, ctx) {
       return `${sep}${unreadSep}<div class="bubble ${out ? 'out' : ''}" ${out ? '' : `data-name="${esc(m.name || '')}" title="Doppelklick: Absender erwähnen"`}>
         <div class="who" ${color}>${esc(who)}</div>${mentions(m.text, ownName())}
         ${details ? detailsHtml(m) : ''}
-        <div class="meta">${fmtTime(m.ts)}</div></div>`;
+        <div class="meta">${chatTime(m.ts)}</div></div>`;
     }).join('');
     // Am Handy scrollt nicht der Chat selbst, sondern die ganze Seite (style.css): so wirkt ein Wisch überall,
     // auch neben der Karte, und es gibt keine zwei verschachtelten Scrollbereiche mehr.

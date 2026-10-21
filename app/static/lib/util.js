@@ -66,6 +66,15 @@ export function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString();
 }
 
+// Zeit im Chat: heute nur die Uhrzeit, sonst Datum davor (Jahr nur, wenn es nicht das aktuelle ist)
+export function chatTime(ts, now = new Date()) {
+  const d = new Date(ts * 1000), time = d.toLocaleTimeString();
+  if (d.toDateString() === now.toDateString()) return time;
+  const opt = {day: '2-digit', month: '2-digit'};
+  if (d.getFullYear() !== now.getFullYear()) opt.year = 'numeric';
+  return `${d.toLocaleDateString([], opt)} ${time}`;
+}
+
 export function fmtDateTime(ts) {
   return new Date(ts * 1000).toLocaleString();
 }

@@ -184,6 +184,7 @@ liefert `bat` in mV, `import_contact` erwartet Bytes, `export_contact` liefert
 - `RealNode.channels()`: gelesene Plätze bleiben in `_chan_known` (auch bei Teil-Liste, `_chan_idx_by_name` wird trotzdem gesetzt); stumme Plätze (`_chan_failed`) erst nach
   `CHANNELS_RETRY_S` (60 s) erneut, je Aufruf höchstens `CHANNELS_TOTAL_S` (45 s); solange einer fehlt → `NodeError` (nie Teil-Liste ausgeben: belegter Platz könnte als frei gelten).
   `invalidate_channels()`/`connect()` vergessen alles. Tests: `tests/test_real_channels.py` (silent_slot, overall_time_limit).
+  Schon gelesene Liste und bekanntes `max_channels` kommen OHNE Befehlssperre zurück (`channels()` → `_channels_locked()` nur beim ersten Lesen); sonst wartet die Kanalübersicht auf jede laufende Node-Aktion (Raum-Zustellung mit Bestätigung, Akkuabfrage). Test `test_cached_channel_list_does_not_wait_for_the_command_lock`.
 - Gegen meshcore 2.3.15 (Quelltext) geprüft, an echter Hardware NICHT getestet: `get_channel` für
   leere Plätze, `max_channels` aus device_query, Verhalten beim Senden auf nicht eingerichtete Plätze.
 
@@ -373,6 +374,7 @@ Das Ergebnis der Prüfung (kurz, Punkt für Punkt) dem Nutzer mitteilen.
   Sitzung ODER `control_token` wie der Wartungsmodus (`_control_auth` in `api.py`); der Watchdog fragt nur nach einem Einbruch. Tests: `tests/test_sendlog.py`.
 - Navigation: auf schmalen Bildschirmen eine wischbare Zeile (`style.css`, Media Query 900 px).
 - Kanal-Chat am Handy: Wisch nach rechts = zurück zur Kanalliste (`pages/channels.js`), nur in der einspaltigen Ansicht (`max-width: 640px`, wie in `style.css`), nicht wenn er im Menü (`#nav`, `.nav-backdrop`) beginnt; sonst hat Wischen nirgends eine Funktion. Ein offener Chat legt einen Verlaufseintrag an (`mcChat`), Browser-Zurück/iOS-Randwisch schließt den Chat; ein verwaister Eintrag wird beim Öffnen der Seite ersetzt. Doppeltippen erwähnt (eigene Erkennung, weil iOS `dblclick` nicht zuverlässig liefert). Entwurf und Erwähnung bleiben beim Kanalwechsel nicht hängen. Offener Chat am Handy: Es scrollt die ganze Seite (`#scrollArea`), nicht ein innerer Bereich; Kopf (`.chat-head`) und Eingabe (`.chat-compose`) sind `sticky`. `scroller()` in `channels.js` wählt den Bereich. Neue Nachrichten springen nur nach unten, wenn man schon unten war (`reloadMessages(0, 'follow')`).
+- Zeit im Chat (Kanal und Kontakt): `chatTime` in `lib/util.js` – heute nur Uhrzeit, sonst Datum davor, Jahr nur bei anderem Jahr. UI-Smoke „Chat-Zeit“.
 - Doppelklick-Schutz: `locked(btn, fn)` in `lib/util.js` (Regel speichern, Pause, Kontakt hinzufügen), Wartungsknöpfe mit `maintBusy`, Regel-Schalter während der Anfrage gesperrt.
   Zähler unter Eingabefeldern: `countLabel` (Zeichen, bei Umlauten/Emojis zusätzlich Byte, Warnung über der Grenze); die genaue Byte-Grenze der Firmware ist NICHT an Hardware geprüft.
 - `app.js` `route()`: jede Seite bekommt einen eigenen Container (`display: contents`), späte Schreibzugriffe einer verlassenen Seite landen im
