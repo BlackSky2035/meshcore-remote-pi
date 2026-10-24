@@ -382,6 +382,13 @@ const status = await (await fetch('/api/status')).json();
           && older !== today && lastYear.includes('2025') && !older.includes('2026'),
           `Chat-Zeit: heute nur Uhrzeit, ältere mit Datum, Jahr nur bei anderem Jahr (${today} | ${older} | ${lastYear})`);
   }
+  {
+    const c = {name: 'Turm Nord', public_key: 'a1b2c3d4e5f6'};
+    const m = q => U.matchesNameOrKey(c, q);
+    check(m('turm') && m('A1') && m('a1b2') && m('A1 B2') && m('0xA1B2') && m('<A1B2>') && m('a1:b2:c3') && m('')
+          && !m('b2') && !m('zz') && !m('a1x'),
+          'Suche: Name oder Hex-Kennung (Anfang des Schlüssels, Leerzeichen/0x/Doppelpunkte/Klammern egal)');
+  }
   check(U.mentionTag('Alice [Sim]') === '@[Alice Sim]' && U.mentionTag('  ') === '' && U.mentionTag(null) === '', 'Erwähnung: eckige Klammern im Namen werden entfernt, leerer Name ergibt keine Erwähnung');
   check(U.withReceiptTime === undefined, 'Uhrzeit-Einfügen ist entfernt');
   root.querySelector('#chat').insertAdjacentHTML('beforeend', `<div class="bubble" data-name="Alice (Sim)">Frage</div>`);

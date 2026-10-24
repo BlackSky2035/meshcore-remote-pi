@@ -1,5 +1,5 @@
 import {get, post, del} from '../lib/api.js';
-import {esc, ago, typeLabel, TYPE_COLOR, pathLabel, chatTime, debounce, mentions, locked, countLabel} from '../lib/util.js';
+import {esc, ago, typeLabel, TYPE_COLOR, pathLabel, chatTime, debounce, mentions, locked, countLabel, matchesNameOrKey} from '../lib/util.js';
 
 const FILTERS = [['all', 'Alle'], ['client', 'Clients'], ['repeater', 'Repeater'], ['room', 'Rooms'], ['sensor', 'Sensoren']];
 
@@ -14,7 +14,7 @@ export async function mount(root, ctx) {
         </div>
       </div>
       <div class="row" style="margin:10px 0">
-        <input id="search" type="search" placeholder="Suchen …">
+        <input id="search" type="search" placeholder="Name oder Hex-Kennung …">
         <div class="chips" id="filters"></div>
       </div>
       <p id="error" class="err"></p>
@@ -63,7 +63,7 @@ export async function mount(root, ctx) {
   function visible() {
     const q = $('search').value.trim().toLowerCase();
     return contacts.filter(c => (filter === 'all' || c.type_name === filter)
-      && (!q || c.name.toLowerCase().includes(q) || c.public_key.startsWith(q)));
+      && matchesNameOrKey(c, q));
   }
 
   function render() {

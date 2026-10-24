@@ -75,6 +75,16 @@ export function chatTime(ts, now = new Date()) {
   return `${d.toLocaleDateString([], opt)} ${time}`;
 }
 
+// Suche nach Name ODER Hex-Kennung (Anfang des Public Keys, wie die Hop-Kennungen in Pfaden). Bei der Kennung zählen
+// Groß-/Kleinschreibung, Leerzeichen, „:“, „-“, „0x“ und spitze Klammern nicht („A1 B2“, „0xa1b2“, „<A1B2>“).
+export function matchesNameOrKey(item, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  if (String(item.name || '').toLowerCase().includes(q)) return true;
+  const hex = q.replace(/0x/g, '').replace(/[\s:<>\-]/g, '');
+  return hex.length > 0 && /^[0-9a-f]+$/.test(hex) && String(item.public_key || '').toLowerCase().startsWith(hex);
+}
+
 export function fmtDateTime(ts) {
   return new Date(ts * 1000).toLocaleString();
 }

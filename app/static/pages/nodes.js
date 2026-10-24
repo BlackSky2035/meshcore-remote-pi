@@ -1,6 +1,6 @@
 import {get, post} from '../lib/api.js';
 import {mountRepeaterPanel} from './repeater_admin.js';
-import {esc, ago, typeLabel, TYPE_COLOR, pathLabel, batteryPct, sparkline, fmtDateTime, debounce} from '../lib/util.js';
+import {esc, ago, typeLabel, TYPE_COLOR, pathLabel, batteryPct, sparkline, fmtDateTime, debounce, matchesNameOrKey} from '../lib/util.js';
 
 const LOW_MV = 3500;   // reine Anzeige; die Warnschwelle der Automatik steht in der Regel
 
@@ -13,7 +13,7 @@ export async function mount(root, ctx) {
       </div>
       <p class="muted small">Repeater, Rooms und Sensoren mit Akkustand und Erreichbarkeit.
         „Abfragen“ holt den aktuellen Status und sendet dafür eine Funkanfrage.</p>
-      <div class="row" style="margin:10px 0"><input id="search" type="search" placeholder="Suchen …"></div>
+      <div class="row" style="margin:10px 0"><input id="search" type="search" placeholder="Name oder Hex-Kennung …"></div>
       <p id="error" class="err"></p>
       <p id="result" role="status" aria-live="polite" hidden></p>
       <div style="overflow-x:auto"><table>
@@ -69,7 +69,7 @@ export async function mount(root, ctx) {
   function render() {
     const q = $('search').value.trim().toLowerCase();
     const list = nodes.filter(n => (showClients || n.type_name !== 'client')
-      && (!q || n.name.toLowerCase().includes(q) || n.public_key.startsWith(q)));
+      && matchesNameOrKey(n, q));
     $('count').textContent = `(${list.length})`;
     $('rows').innerHTML = list.length ? list.map(n => {
       const monitorable = ['repeater', 'room'].includes(n.type_name);
